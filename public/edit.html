@@ -11,7 +11,7 @@
   .pane:last-child { border-right: none; }
   .toolbar { padding: 8px 12px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; align-items: center; background: var(--bg); flex-wrap: wrap; }
   textarea { flex: 1; border: none; padding: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; resize: none; outline: none; }
-  #preview { flex: 1; overflow: auto; padding: 16px; background: #f7f7f7; }
+  #preview { flex: 1; overflow: auto; padding: 16px; background: #f7f7f7; position: relative; }
   #preview svg { max-width: 100%; user-select: none; }
   button { padding: 5px 12px; border: 1px solid #ccc; background: white; cursor: pointer; border-radius: 4px; font-size: 13px; }
   button:hover { background: #f0f0f0; }
@@ -34,6 +34,18 @@
   #preview g.pex-selected > path {
     stroke: var(--danger) !important; stroke-width: 2.5 !important;
   }
+  #preview g.link { cursor: pointer; }
+  #preview g.link.pex-edge-selected > path { stroke: var(--accent) !important; stroke-width: 2.5 !important; }
+  .pex-handle { fill: var(--accent); stroke: white; stroke-width: 1.5; cursor: grab; }
+  .pex-handle:active { cursor: grabbing; }
+  .pex-anchor { fill: white; stroke: var(--accent); stroke-width: 1.5; cursor: grab; }
+  .pex-anchor:active { cursor: grabbing; }
+  .pex-handle-guide { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 4 3; pointer-events: none; opacity: 0.7; }
+  #edgeToolbar { display: none; gap: 4px; align-items: center; margin-left: 8px; padding-left: 8px; border-left: 1px solid var(--border); }
+  #edgeToolbar.shown { display: inline-flex; }
+  #edgeToolbar .label { font-size: 12px; color: #666; margin-right: 2px; }
+  #edgeToolbar button { padding: 4px 10px; font-size: 12px; }
+  #edgeToolbar button.active { background: var(--accent); color: white; border-color: var(--accent); }
   .hint { font-size: 12px; color:#888; padding: 6px 12px; background: #fffbe8; border-bottom: 1px solid var(--border); }
 </style>
 </head>
@@ -55,18 +67,55 @@
     <button id="btnRender" class="primary">Render</button>
     <button id="btnApply">Apply Layout</button>
     <button id="btnReset">Reset Layout</button>
+    <span id="edgeToolbar">
+      <span class="label">선택한 선:</span>
+      <button data-type="straight">직선</button>
+      <button data-type="curve">곡선</button>
+      <button data-type="ortho">꺾은선</button>
+    </span>
     <span class="status">
       <span id="statusR"></span>
       <a id="embedLink" href="#" target="_blank" style="display:none; margin-left:12px"></a>
     </span>
   </div>
-  <div class="hint">엔티티(<code>g.entity</code>)를 드래그하여 배치를 조정하세요. edge 끝점/제어점/라벨/화살표는 자동 재라우팅됩니다.</div>
+  <div class="hint">엔티티 드래그로 배치 조정. 연결선 클릭 후 직선/곡선/꺾은선 선택, 곡선의 핸들로 모양 수정.</div>
   <div id="preview">← 좌측 소스를 작성하고 Render를 누르세요.</div>
 </div>
 
 <script src="/pex-geom.js"></script>
 <script>
-const state = { id: null, layout: {}, selected: null, dragging: null };
+const state = {
+  id: null,
+  layout: { nodes: {}, edges: {} },
+  selected: null,            // entity g element
+  selectedEdge: null,        // link g element
+  dragging: null,
+  draggingHandle: null,      // { which: 'c1'|'c2', edgeKey, ... }
+};
+
+// Stable identity for an entity: prefer PlantUML's qualified-name (e.g., "UC009",
+// "Admin") over the auto-generated id (e.g., "ent0007"). qualified-name is
+// derived from the user's `as <name>` aliases and survives source edits that
+// reorder elements.
+function entityQname(g) { return g.getAttribute('data-qualified-name') || g.id; }
+
+// Stable identity for an edge: pair of qualified-names, source__target.
+function edgeKeyForLink(svg, linkG) {
+  const e1G = svg.querySelector(`g[id="${linkG.getAttribute('data-entity-1')}"]`);
+  const e2G = svg.querySelector(`g[id="${linkG.getAttribute('data-entity-2')}"]`);
+  if (!e1G || !e2G) return null;
+  return `${entityQname(e1G)}__${entityQname(e2G)}`;
+}
+
+// Normalize the layout shape on load. Older saves may be flat (qname → delta),
+// newer saves use { nodes, edges }.
+function normalizeLayout(raw) {
+  if (!raw) return { nodes: {}, edges: {} };
+  if (raw.nodes !== undefined || raw.edges !== undefined) {
+    return { nodes: raw.nodes || {}, edges: raw.edges || {} };
+  }
+  return { nodes: raw, edges: {} };
+}
 
 const $ = (id) => document.getElementById(id);
 const setStatus = (side, msg) => {
@@ -93,14 +142,17 @@ function wireSvg() {
   const svg = $('preview').querySelector('svg');
   if (!svg) return;
   svg.querySelectorAll('g.entity').forEach((g) => {
-    const d = state.layout[g.id];
+    const d = state.layout.nodes[entityQname(g)];
     if (d) g.setAttribute('transform', `translate(${d.dx}, ${d.dy})`);
     g.addEventListener('pointerdown', (e) => startDrag(e, g, svg));
     g.addEventListener('click', (e) => { e.stopPropagation(); selectNode(g); });
   });
+  svg.querySelectorAll('g.link').forEach((g) => {
+    g.addEventListener('click', (e) => { e.stopPropagation(); selectEdge(g, svg); });
+  });
   applyEdgeFollow(svg);
   adjustViewBox(svg);
-  svg.addEventListener('click', () => selectNode(null));
+  svg.addEventListener('click', () => { selectNode(null); selectEdge(null); });
 }
 
 function adjustViewBox(svg) {
@@ -113,7 +165,7 @@ function adjustViewBox(svg) {
   if (vb.length !== 4) return;
   const [x, y, w, h] = vb;
   let minDx = 0, maxDx = 0, minDy = 0, maxDy = 0;
-  for (const d of Object.values(state.layout)) {
+  for (const d of Object.values(state.layout.nodes)) {
     if (!d) continue;
     minDx = Math.min(minDx, d.dx);
     maxDx = Math.max(maxDx, d.dx);
@@ -139,9 +191,14 @@ function applyEdgeFollow(svg) {
     const e2Id = g.getAttribute('data-entity-2');
     const e1G = svg.querySelector(`g[id="${e1Id}"]`);
     const e2G = svg.querySelector(`g[id="${e2Id}"]`);
-    const d1 = state.layout[e1Id] || { dx: 0, dy: 0 };
-    const d2 = state.layout[e2Id] || { dx: 0, dy: 0 };
+    const q1 = e1G ? entityQname(e1G) : e1Id;
+    const q2 = e2G ? entityQname(e2G) : e2Id;
+    const d1 = state.layout.nodes[q1] || { dx: 0, dy: 0 };
+    const d2 = state.layout.nodes[q2] || { dx: 0, dy: 0 };
+    const eKey = `${q1}__${q2}`;
+    const edgeOverride = state.layout.edges[eKey];
     const moved = d1.dx || d1.dy || d2.dx || d2.dy;
+    const hasOverride = !!edgeOverride;
 
     const firstPath = g.querySelector('path');
     if (!firstPath) return;
@@ -161,7 +218,7 @@ function applyEdgeFollow(svg) {
       }
     });
 
-    if (!moved || !e1G || !e2G) {
+    if ((!moved && !hasOverride) || !e1G || !e2G) {
       // Restore originals
       g.querySelectorAll('path').forEach((p) => {
         const o = p.getAttribute('data-pex-orig-d');
@@ -183,25 +240,23 @@ function applyEdgeFollow(svg) {
     const b2 = e2G.getBBox();
     const e1Box = { x: b1.x + d1.dx, y: b1.y + d1.dy, w: b1.width, h: b1.height };
     const e2Box = { x: b2.x + d2.dx, y: b2.y + d2.dy, w: b2.width, h: b2.height };
-    const c1 = PexGeom.bboxCenter(e1Box);
-    const c2 = PexGeom.bboxCenter(e2Box);
-    const newStart = PexGeom.rectExit(c1, c2, e1Box);
-    const newEnd = PexGeom.rectExit(c2, c1, e2Box);
+    const c1c = PexGeom.bboxCenter(e1Box);
+    const c2c = PexGeom.bboxCenter(e2Box);
+    const newStart = (edgeOverride && edgeOverride.startAnchor)
+      ? PexGeom.pointOnBboxBorder(e1Box, edgeOverride.startAnchor)
+      : PexGeom.rectExit(c1c, c2c, e1Box);
+    const newEnd = (edgeOverride && edgeOverride.endAnchor)
+      ? PexGeom.pointOnBboxBorder(e2Box, edgeOverride.endAnchor)
+      : PexGeom.rectExit(c2c, c1c, e2Box);
 
     const ctx = PexGeom.getPathContext(origD);
     if (!ctx) return;
 
-    const wasCurved = /[CQS]/i.test(origD);
-
-    // Update only the first <path> with the rebuilt edge; others (rare) revert
-    g.querySelectorAll('path').forEach((p, idx) => {
-      const o = p.getAttribute('data-pex-orig-d');
-      p.setAttribute('d', idx === 0 ? PexGeom.buildEdgePath(newStart, newEnd, wasCurved ? ctx : null) : (o || ''));
-    });
-
-    const newAngle = Math.atan2(newEnd.y - newStart.y, newEnd.x - newStart.x);
-    const oldAngle = Math.atan2(ctx.end.y - ctx.start.y, ctx.end.x - ctx.start.x);
-
+    // Pre-pass over polygons: classify each as start/end-side, gather originals,
+    // and measure each side's arrow length so we can pull the path back from
+    // the boundary just enough that the arrow tip lands on the boundary line.
+    let tipExtStart = 0, tipExtEnd = 0;
+    const polyInfo = [];
     g.querySelectorAll('polygon').forEach((poly) => {
       const o = poly.getAttribute('data-pex-orig-points');
       const nums = o.trim().split(/[\s,]+/).filter((s) => s.length).map(parseFloat);
@@ -211,16 +266,62 @@ function applyEdgeFollow(svg) {
       const dStart = (cx - ctx.start.x) ** 2 + (cy - ctx.start.y) ** 2;
       const dEnd = (cx - ctx.end.x) ** 2 + (cy - ctx.end.y) ** 2;
       const atStart = dStart < dEnd;
-      const oldAnchor = atStart ? ctx.start : ctx.end;
-      const newAnchor = atStart ? newStart : newEnd;
-      poly.setAttribute('points', PexGeom.reorientPolygon(o, oldAnchor, newAnchor, newAngle - oldAngle));
+      const origAnchor = atStart ? ctx.start : ctx.end;
+      const outwardAng = atStart ? ctx.startTangent + Math.PI : ctx.endTangent;
+      const ext = PexGeom.polygonOutwardExtent(o, origAnchor, outwardAng);
+      if (atStart) tipExtStart = Math.max(tipExtStart, ext);
+      else tipExtEnd = Math.max(tipExtEnd, ext);
+      polyInfo.push({ poly, atStart, origAnchor });
     });
 
-    // Labels: project onto original line, get t + perpendicular offset, map onto new line
+    // Pull path endpoints inward from the boundary by tipExt on each side.
+    const ndx = newEnd.x - newStart.x, ndy = newEnd.y - newStart.y;
+    const nLen = Math.hypot(ndx, ndy) || 1;
+    const fwd = { x: ndx / nLen, y: ndy / nLen };
+    const newPathStart = { x: newStart.x + tipExtStart * fwd.x, y: newStart.y + tipExtStart * fwd.y };
+    const newPathEnd   = { x: newEnd.x   - tipExtEnd   * fwd.x, y: newEnd.y   - tipExtEnd   * fwd.y };
+
+    const wasCurved = /[CQS]/i.test(origD);
+    const edgeType = (edgeOverride && edgeOverride.type) || (wasCurved ? 'curve' : 'straight');
+    const edgeOpts = {
+      type: edgeType,
+      ctx: edgeType === 'curve' ? ctx : null,
+      u1: edgeOverride && edgeOverride.u1,
+      u2: edgeOverride && edgeOverride.u2,
+    };
+    const built = PexGeom.buildEdgePath(newPathStart, newPathEnd, edgeOpts);
+
+    // Stash both boundary points (anchor markers) and path endpoints
+    // (handle guides + polygon anchors).
+    g._pexBuilt = {
+      ...built,
+      newStart, newEnd,
+      pathStart: newPathStart, pathEnd: newPathEnd,
+      type: edgeType,
+    };
+
+    g.querySelectorAll('path').forEach((p, idx) => {
+      const o = p.getAttribute('data-pex-orig-d');
+      p.setAttribute('d', idx === 0 ? built.d : (o || ''));
+    });
+
+    const oldStartAngle = ctx.startTangent;
+    const oldEndAngle = ctx.endTangent;
+
+    polyInfo.forEach(({ poly, atStart, origAnchor }) => {
+      const o = poly.getAttribute('data-pex-orig-points');
+      const newAnchor = atStart ? newPathStart : newPathEnd;
+      const oldAng = atStart ? oldStartAngle : oldEndAngle;
+      const newAng = atStart ? built.startTangent : built.endTangent;
+      poly.setAttribute('points', PexGeom.reorientPolygon(o, origAnchor, newAnchor, newAng - oldAng));
+    });
+
+    // Labels: project onto original straight line, map to new straight start→end line
     const odx = ctx.end.x - ctx.start.x, ody = ctx.end.y - ctx.start.y;
     const olen2 = odx * odx + ody * ody;
-    const ndx = newEnd.x - newStart.x, ndy = newEnd.y - newStart.y;
-    const dAng = newAngle - oldAngle;
+    const oldLineAngle = Math.atan2(ody, odx);
+    const newLineAngle = Math.atan2(ndy, ndx);
+    const dAng = newLineAngle - oldLineAngle;
     const cosA = Math.cos(dAng), sinA = Math.sin(dAng);
 
     g.querySelectorAll('text').forEach((t) => {
@@ -239,6 +340,7 @@ function applyEdgeFollow(svg) {
       t.setAttribute('y', newStart.y + tp * ndy + rotY);
     });
   });
+  if (state.selectedEdge) renderHandles(svg);
 }
 
 function selectNode(g) {
@@ -247,13 +349,219 @@ function selectNode(g) {
   if (g) g.classList.add('pex-selected');
 }
 
+function selectEdge(g, svg) {
+  if (state.selectedEdge) state.selectedEdge.classList.remove('pex-edge-selected');
+  state.selectedEdge = g;
+  if (g) {
+    g.classList.add('pex-edge-selected');
+    // Implicit override on selection: ensures the path is rebuilt via our
+    // boundary-anchored geometry so the handle markers match what the user
+    // sees. Reset Layout removes overrides.
+    const eKey = edgeKeyForLink(svg, g);
+    if (eKey && !state.layout.edges[eKey]) {
+      const pathD = g.querySelector('path').getAttribute('data-pex-orig-d') || g.querySelector('path').getAttribute('d') || '';
+      const wasCurved = /[CQS]/i.test(pathD);
+      state.layout.edges[eKey] = { type: wasCurved ? 'curve' : 'straight' };
+    }
+    applyEdgeFollow(svg);
+    showEdgeToolbar(g, svg);
+  } else {
+    hideEdgeToolbar();
+    clearHandles();
+  }
+}
+
+function ensureHandleLayer(svg) {
+  let layer = svg.querySelector('g.pex-handle-layer');
+  if (!layer) {
+    layer = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    layer.setAttribute('class', 'pex-handle-layer');
+    svg.appendChild(layer);
+  }
+  return layer;
+}
+
+function clearHandles() {
+  const svg = $('preview').querySelector('svg');
+  if (!svg) return;
+  const layer = svg.querySelector('g.pex-handle-layer');
+  if (layer) layer.innerHTML = '';
+}
+
+function renderHandles(svg) {
+  const layer = ensureHandleLayer(svg);
+  const eg = state.selectedEdge;
+  if (!eg || !eg._pexBuilt) { layer.innerHTML = ''; return; }
+  const built = eg._pexBuilt;
+  const ns = 'http://www.w3.org/2000/svg';
+
+  // In-place update: keep DOM elements alive across re-renders so handles
+  // currently being dragged retain their pointer capture and event listeners.
+  const ensure = (selector, factory) => {
+    let el = layer.querySelector(selector);
+    if (!el) { el = factory(); layer.appendChild(el); }
+    return el;
+  };
+  const setAttrs = (el, attrs) => { for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v); };
+
+  const a1 = ensure('.pex-anchor[data-role="start"]', () => {
+    const e = document.createElementNS(ns, 'circle');
+    e.setAttribute('class', 'pex-anchor'); e.setAttribute('data-role', 'start'); e.setAttribute('r', 5);
+    e.addEventListener('pointerdown', (ev) => startHandleDrag(ev, 'start', svg));
+    return e;
+  });
+  setAttrs(a1, { cx: built.newStart.x, cy: built.newStart.y });
+
+  const a2 = ensure('.pex-anchor[data-role="end"]', () => {
+    const e = document.createElementNS(ns, 'circle');
+    e.setAttribute('class', 'pex-anchor'); e.setAttribute('data-role', 'end'); e.setAttribute('r', 5);
+    e.addEventListener('pointerdown', (ev) => startHandleDrag(ev, 'end', svg));
+    return e;
+  });
+  setAttrs(a2, { cx: built.newEnd.x, cy: built.newEnd.y });
+
+  if (built.type !== 'curve' || !built.c1 || !built.c2) {
+    layer.querySelectorAll('.pex-handle, .pex-handle-guide').forEach((el) => el.remove());
+    return;
+  }
+
+  const ps = built.pathStart || built.newStart;
+  const pe = built.pathEnd || built.newEnd;
+
+  const g1 = ensure('.pex-handle-guide[data-role="g1"]', () => {
+    const e = document.createElementNS(ns, 'line');
+    e.setAttribute('class', 'pex-handle-guide'); e.setAttribute('data-role', 'g1');
+    return e;
+  });
+  setAttrs(g1, { x1: ps.x, y1: ps.y, x2: built.c1.x, y2: built.c1.y });
+
+  const g2 = ensure('.pex-handle-guide[data-role="g2"]', () => {
+    const e = document.createElementNS(ns, 'line');
+    e.setAttribute('class', 'pex-handle-guide'); e.setAttribute('data-role', 'g2');
+    return e;
+  });
+  setAttrs(g2, { x1: pe.x, y1: pe.y, x2: built.c2.x, y2: built.c2.y });
+
+  const h1 = ensure('.pex-handle[data-which="c1"]', () => {
+    const e = document.createElementNS(ns, 'circle');
+    e.setAttribute('class', 'pex-handle'); e.setAttribute('data-which', 'c1'); e.setAttribute('r', 6);
+    e.addEventListener('pointerdown', (ev) => startHandleDrag(ev, 'c1', svg));
+    return e;
+  });
+  setAttrs(h1, { cx: built.c1.x, cy: built.c1.y });
+
+  const h2 = ensure('.pex-handle[data-which="c2"]', () => {
+    const e = document.createElementNS(ns, 'circle');
+    e.setAttribute('class', 'pex-handle'); e.setAttribute('data-which', 'c2'); e.setAttribute('r', 6);
+    e.addEventListener('pointerdown', (ev) => startHandleDrag(ev, 'c2', svg));
+    return e;
+  });
+  setAttrs(h2, { cx: built.c2.x, cy: built.c2.y });
+}
+
+function showEdgeToolbar(linkG, svg) {
+  const tb = $('edgeToolbar');
+  if (!tb) return;
+  tb.classList.add('shown');
+  const eKey = edgeKeyForLink(svg, linkG);
+  const ov = state.layout.edges[eKey];
+  const wasCurved = /[CQS]/i.test(linkG.querySelector('path').getAttribute('data-pex-orig-d') || '');
+  const curType = (ov && ov.type) || (wasCurved ? 'curve' : 'straight');
+  tb.querySelectorAll('button').forEach((b) => {
+    b.classList.toggle('active', b.dataset.type === curType);
+  });
+  tb.dataset.edgeKey = eKey;
+}
+
+function hideEdgeToolbar() {
+  const tb = $('edgeToolbar');
+  if (tb) tb.classList.remove('shown');
+}
+
+function setEdgeType(type) {
+  const eg = state.selectedEdge;
+  if (!eg) return;
+  const svg = $('preview').querySelector('svg');
+  const eKey = edgeKeyForLink(svg, eg);
+  if (!eKey) return;
+  const cur = state.layout.edges[eKey] || {};
+  // Clear u1/u2 when switching away from curve
+  const next = { ...cur, type };
+  if (type !== 'curve') { delete next.u1; delete next.u2; }
+  state.layout.edges[eKey] = next;
+  applyEdgeFollow(svg);
+  adjustViewBox(svg);
+  showEdgeToolbar(eg, svg);
+}
+
+function startHandleDrag(e, which, svg) {
+  e.stopPropagation();
+  e.preventDefault();
+  const eg = state.selectedEdge;
+  if (!eg) return;
+  const eKey = edgeKeyForLink(svg, eg);
+  if (!eKey) return;
+  const target = e.currentTarget;
+  state.draggingHandle = { which, eKey, svg, target };
+  target.setPointerCapture(e.pointerId);
+  target.addEventListener('pointermove', onHandleDrag);
+  target.addEventListener('pointerup', endHandleDrag);
+  target.addEventListener('pointercancel', endHandleDrag);
+}
+
+function onHandleDrag(e) {
+  const h = state.draggingHandle;
+  if (!h) return;
+  const eg = state.selectedEdge;
+  if (!eg || !eg._pexBuilt) return;
+  const pt = clientToSvg(e, h.svg);
+  const built = eg._pexBuilt;
+  const cur = state.layout.edges[h.eKey] || { type: 'curve' };
+
+  if (h.which === 'c1' || h.which === 'c2') {
+    // Control-point drag: store as vector from corresponding anchor
+    if (h.which === 'c1') {
+      cur.u1 = { x: pt.x - built.newStart.x, y: pt.y - built.newStart.y };
+      if (!cur.u2) cur.u2 = built.u2 || { x: 0, y: 0 };
+    } else {
+      cur.u2 = { x: built.newEnd.x - pt.x, y: built.newEnd.y - pt.y };
+      if (!cur.u1) cur.u1 = built.u1 || { x: 0, y: 0 };
+    }
+    cur.type = 'curve';
+  } else if (h.which === 'start' || h.which === 'end') {
+    // Anchor drag: snap to nearest point on entity boundary
+    const entityId = eg.getAttribute(h.which === 'start' ? 'data-entity-1' : 'data-entity-2');
+    const entityG = h.svg.querySelector(`g[id="${entityId}"]`);
+    if (!entityG) return;
+    const q = entityQname(entityG);
+    const delta = state.layout.nodes[q] || { dx: 0, dy: 0 };
+    const b = entityG.getBBox();
+    const bbox = { x: b.x + delta.dx, y: b.y + delta.dy, w: b.width, h: b.height };
+    const snapped = PexGeom.nearestBboxBorder(bbox, pt);
+    cur[h.which === 'start' ? 'startAnchor' : 'endAnchor'] = { side: snapped.side, t: snapped.t };
+  }
+  state.layout.edges[h.eKey] = cur;
+  applyEdgeFollow(h.svg);
+}
+
+function endHandleDrag(e) {
+  const h = state.draggingHandle;
+  if (!h) return;
+  h.target.removeEventListener('pointermove', onHandleDrag);
+  h.target.removeEventListener('pointerup', endHandleDrag);
+  h.target.removeEventListener('pointercancel', endHandleDrag);
+  try { h.target.releasePointerCapture(e.pointerId); } catch {}
+  state.draggingHandle = null;
+}
+
 function startDrag(e, g, svg) {
   e.preventDefault();
   selectNode(g);
   const pt = clientToSvg(e, svg);
-  const existing = state.layout[g.id] || { dx: 0, dy: 0 };
+  const q = entityQname(g);
+  const existing = state.layout.nodes[q] || { dx: 0, dy: 0 };
   state.dragging = {
-    g, svg,
+    g, svg, q,
     startX: pt.x, startY: pt.y,
     originDx: existing.dx, originDy: existing.dy
   };
@@ -270,7 +578,7 @@ function onDrag(e) {
   const dx = Math.round(d.originDx + (pt.x - d.startX));
   const dy = Math.round(d.originDy + (pt.y - d.startY));
   d.g.setAttribute('transform', `translate(${dx}, ${dy})`);
-  state.layout[d.g.id] = { dx, dy };
+  state.layout.nodes[d.q] = { dx, dy };
   applyEdgeFollow(d.svg);
   adjustViewBox(d.svg);
 }
@@ -298,7 +606,7 @@ async function createDiagram() {
     body: JSON.stringify({ source: $('src').value })
   });
   const { id } = await res.json();
-  state.id = id; state.layout = {};
+  state.id = id; state.layout = { nodes: {}, edges: {} };
   $('did').value = id;
   history.replaceState(null, '', `/edit/${id}`);
   updateEmbedLink();
@@ -311,7 +619,7 @@ async function loadDiagram() {
   const res = await fetch(`/diagrams/${id}`);
   if (!res.ok) { setStatus('L', 'not found'); return; }
   const d = await res.json();
-  state.id = d.id; state.layout = d.layout || {};
+  state.id = d.id; state.layout = normalizeLayout(d.layout);
   $('src').value = d.source || '';
   history.replaceState(null, '', `/edit/${d.id}`);
   updateEmbedLink();
@@ -340,7 +648,7 @@ async function applyLayout() {
 }
 
 function resetLayout() {
-  state.layout = {};
+  state.layout = { nodes: {}, edges: {} };
   render();
   setStatus('R', 'layout reset (not saved)');
 }
@@ -373,9 +681,16 @@ Customer "1" --> "*" Order
 Order "*" --> "*" Product
 @enduml`;
 
+document.querySelectorAll('#edgeToolbar button').forEach((b) => {
+  b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setEdgeType(b.dataset.type);
+  });
+});
+
 $('btnRender').onclick = render;
 $('btnNew').onclick = () => {
-  state.id = null; state.layout = {};
+  state.id = null; state.layout = { nodes: {}, edges: {} };
   $('did').value = '';
   $('src').value = SAMPLE;
   $('preview').innerHTML = 'Click Render.';

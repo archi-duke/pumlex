@@ -28,23 +28,52 @@ async function renderSvg(source) {
   return await res.text();
 }
 
-function applyLayout(svg, layout) {
-  if (!layout || Object.keys(layout).length === 0) return svg;
+function normalizeLayout(raw) {
+  if (!raw) return { nodes: {}, edges: {} };
+  if (raw.nodes !== undefined || raw.edges !== undefined) {
+    return { nodes: raw.nodes || {}, edges: raw.edges || {} };
+  }
+  return { nodes: raw, edges: {} };
+}
+
+function applyLayout(svg, rawLayout) {
+  const layout = normalizeLayout(rawLayout);
+  const nodes = layout.nodes;
+  const edges = layout.edges;
+  if (Object.keys(nodes).length === 0 && Object.keys(edges).length === 0) return svg;
   const $ = cheerio.load(svg, { xmlMode: true });
-  for (const [nodeId, delta] of Object.entries(layout)) {
-    const el = $(`#${cssEscape(nodeId)}`);
-    if (el.length === 0) continue;
-    const existing = (el.attr('transform') || '').trim();
+
+  // Build qname ↔ id maps so PlantUML's auto-generated `ent00XX` ids can shift
+  // freely as the source is edited without invalidating saved layouts.
+  const qToEl = {};
+  const idToQ = {};
+  $('g.entity').each((_, el) => {
+    const $el = $(el);
+    const id = $el.attr('id');
+    const q = $el.attr('data-qualified-name') || id;
+    if (q) { qToEl[q] = $el; idToQ[id] = q; }
+  });
+
+  for (const [qname, delta] of Object.entries(nodes)) {
+    const $el = qToEl[qname];
+    if (!$el) continue;
+    const existing = ($el.attr('transform') || '').trim();
     const add = `translate(${delta.dx}, ${delta.dy})`;
-    el.attr('transform', existing ? `${existing} ${add}` : add);
+    $el.attr('transform', existing ? `${existing} ${add}` : add);
   }
   $('g.link').each((_, el) => {
     const $el = $(el);
     const e1Id = $el.attr('data-entity-1');
     const e2Id = $el.attr('data-entity-2');
-    const d1 = layout[e1Id] || { dx: 0, dy: 0 };
-    const d2 = layout[e2Id] || { dx: 0, dy: 0 };
-    if (!(d1.dx || d1.dy || d2.dx || d2.dy)) return;
+    const q1 = idToQ[e1Id] || e1Id;
+    const q2 = idToQ[e2Id] || e2Id;
+    const d1 = nodes[q1] || { dx: 0, dy: 0 };
+    const d2 = nodes[q2] || { dx: 0, dy: 0 };
+    const eKey = `${q1}__${q2}`;
+    const edgeOverride = edges[eKey];
+    const moved = d1.dx || d1.dy || d2.dx || d2.dy;
+    const hasOverride = !!edgeOverride;
+    if (!moved && !hasOverride) return;
 
     const e1G = $(`g[id="${e1Id}"]`).first();
     const e2G = $(`g[id="${e2Id}"]`).first();
@@ -57,20 +86,20 @@ function applyLayout(svg, layout) {
     const e2Box = { x: b2.x + d2.dx, y: b2.y + d2.dy, w: b2.w, h: b2.h };
     const c1 = PexGeom.bboxCenter(e1Box);
     const c2 = PexGeom.bboxCenter(e2Box);
-    const newStart = PexGeom.rectExit(c1, c2, e1Box);
-    const newEnd = PexGeom.rectExit(c2, c1, e2Box);
+    const newStart = (edgeOverride && edgeOverride.startAnchor)
+      ? PexGeom.pointOnBboxBorder(e1Box, edgeOverride.startAnchor)
+      : PexGeom.rectExit(c1, c2, e1Box);
+    const newEnd = (edgeOverride && edgeOverride.endAnchor)
+      ? PexGeom.pointOnBboxBorder(e2Box, edgeOverride.endAnchor)
+      : PexGeom.rectExit(c2, c1, e2Box);
 
     const firstPath = $el.find('path').first();
     const origD = firstPath.attr('d');
     const ctx = origD ? PexGeom.getPathContext(origD) : null;
     if (!ctx) return;
 
-    const wasCurved = /[CQS]/i.test(origD);
-    firstPath.attr('d', PexGeom.buildEdgePath(newStart, newEnd, wasCurved ? ctx : null));
-
-    const newAngle = Math.atan2(newEnd.y - newStart.y, newEnd.x - newStart.x);
-    const oldAngle = Math.atan2(ctx.end.y - ctx.start.y, ctx.end.x - ctx.start.x);
-
+    let tipExtStart = 0, tipExtEnd = 0;
+    const polyInfo = [];
     $el.find('polygon').each((__, poly) => {
       const $poly = $(poly);
       const op = $poly.attr('points');
@@ -82,15 +111,46 @@ function applyLayout(svg, layout) {
       const dStart = (cx - ctx.start.x) ** 2 + (cy - ctx.start.y) ** 2;
       const dEnd = (cx - ctx.end.x) ** 2 + (cy - ctx.end.y) ** 2;
       const atStart = dStart < dEnd;
-      const oldAnchor = atStart ? ctx.start : ctx.end;
-      const newAnchor = atStart ? newStart : newEnd;
-      $poly.attr('points', PexGeom.reorientPolygon(op, oldAnchor, newAnchor, newAngle - oldAngle));
+      const origAnchor = atStart ? ctx.start : ctx.end;
+      const outwardAng = atStart ? ctx.startTangent + Math.PI : ctx.endTangent;
+      const ext = PexGeom.polygonOutwardExtent(op, origAnchor, outwardAng);
+      if (atStart) tipExtStart = Math.max(tipExtStart, ext);
+      else tipExtEnd = Math.max(tipExtEnd, ext);
+      polyInfo.push({ $poly, atStart, origAnchor });
+    });
+
+    const ndx = newEnd.x - newStart.x, ndy = newEnd.y - newStart.y;
+    const nLen = Math.hypot(ndx, ndy) || 1;
+    const fwd = { x: ndx / nLen, y: ndy / nLen };
+    const newPathStart = { x: newStart.x + tipExtStart * fwd.x, y: newStart.y + tipExtStart * fwd.y };
+    const newPathEnd   = { x: newEnd.x   - tipExtEnd   * fwd.x, y: newEnd.y   - tipExtEnd   * fwd.y };
+
+    const wasCurved = /[CQS]/i.test(origD);
+    const edgeType = (edgeOverride && edgeOverride.type) || (wasCurved ? 'curve' : 'straight');
+    const built = PexGeom.buildEdgePath(newPathStart, newPathEnd, {
+      type: edgeType,
+      ctx: edgeType === 'curve' ? ctx : null,
+      u1: edgeOverride && edgeOverride.u1,
+      u2: edgeOverride && edgeOverride.u2,
+    });
+    firstPath.attr('d', built.d);
+
+    const oldStartAngle = ctx.startTangent;
+    const oldEndAngle = ctx.endTangent;
+
+    polyInfo.forEach(({ $poly, atStart, origAnchor }) => {
+      const op = $poly.attr('data-pex-orig-points') || $poly.attr('points');
+      const newAnchor = atStart ? newPathStart : newPathEnd;
+      const oldAng = atStart ? oldStartAngle : oldEndAngle;
+      const newAng = atStart ? built.startTangent : built.endTangent;
+      $poly.attr('points', PexGeom.reorientPolygon(op, origAnchor, newAnchor, newAng - oldAng));
     });
 
     const odx = ctx.end.x - ctx.start.x, ody = ctx.end.y - ctx.start.y;
     const olen2 = odx * odx + ody * ody;
-    const ndx = newEnd.x - newStart.x, ndy = newEnd.y - newStart.y;
-    const dAng = newAngle - oldAngle;
+    const oldLineAngle = Math.atan2(ody, odx);
+    const newLineAngle = Math.atan2(ndy, ndx);
+    const dAng = newLineAngle - oldLineAngle;
     const cosA = Math.cos(dAng), sinA = Math.sin(dAng);
 
     $el.find('text').each((__, t) => {
@@ -110,7 +170,7 @@ function applyLayout(svg, layout) {
       $t.attr('y', String(newStart.y + tp * ndy + rotY));
     });
   });
-  expandViewBox($, layout);
+  expandViewBox($, nodes);
   return $.xml();
 }
 

@@ -132,6 +132,39 @@
 
   function bboxCenter(b) { return { x: b.x + b.w / 2, y: b.y + b.h / 2 }; }
 
+  // Resolve a {side, t} parameterization to an absolute point on the bbox
+  // border. Stable across entity moves: as long as the bbox shifts together,
+  // the relative position on the border stays fixed.
+  function pointOnBboxBorder(bbox, anchor) {
+    if (!anchor) return null;
+    const t = Math.max(0, Math.min(1, anchor.t || 0));
+    if (anchor.side === 'top')    return { x: bbox.x + t * bbox.w, y: bbox.y };
+    if (anchor.side === 'right')  return { x: bbox.x + bbox.w,     y: bbox.y + t * bbox.h };
+    if (anchor.side === 'bottom') return { x: bbox.x + t * bbox.w, y: bbox.y + bbox.h };
+    if (anchor.side === 'left')   return { x: bbox.x,              y: bbox.y + t * bbox.h };
+    return null;
+  }
+
+  // Find the closest point on a bbox border to an arbitrary point. Used while
+  // dragging an anchor: the user moves freely with the pointer, but the result
+  // snaps to the entity boundary.
+  function nearestBboxBorder(bbox, p) {
+    const tH = Math.max(0, Math.min(1, (p.x - bbox.x) / (bbox.w || 1)));
+    const tV = Math.max(0, Math.min(1, (p.y - bbox.y) / (bbox.h || 1)));
+    const cands = [
+      { side: 'top',    t: tH, point: { x: bbox.x + tH * bbox.w, y: bbox.y } },
+      { side: 'bottom', t: tH, point: { x: bbox.x + tH * bbox.w, y: bbox.y + bbox.h } },
+      { side: 'left',   t: tV, point: { x: bbox.x,              y: bbox.y + tV * bbox.h } },
+      { side: 'right',  t: tV, point: { x: bbox.x + bbox.w,     y: bbox.y + tV * bbox.h } },
+    ];
+    let best = cands[0], bestD = Infinity;
+    for (const c of cands) {
+      const d = (c.point.x - p.x) ** 2 + (c.point.y - p.y) ** 2;
+      if (d < bestD) { bestD = d; best = c; }
+    }
+    return best;
+  }
+
   // Find the point at which a ray from `from` toward `target` first crosses the
   // axis-aligned rectangle `rect`. Used to anchor an edge to the boundary of an
   // entity instead of to a fixed coordinate.
@@ -148,46 +181,79 @@
     return { x: from.x + t * dx, y: from.y + t * dy };
   }
 
-  // Build a path between newStart and newEnd. With ctx (curved original):
-  // produces a cubic with 1/3-along-line parallel handles plus a perpendicular
-  // bend whose direction is inferred from the original path's bend sign and
-  // whose magnitude is at least MIN_BEND_FRAC of the new line length. Without
-  // ctx: straight line.
-  function buildEdgePath(newStart, newEnd, ctx) {
-    if (!ctx) return `M${newStart.x},${newStart.y} L${newEnd.x},${newEnd.y}`;
-    const odx = ctx.end.x - ctx.start.x, ody = ctx.end.y - ctx.start.y;
+  // Build a path between two boundary points. Returns the d string plus the
+  // tangent angles at start and end (used by the caller to orient arrowheads).
+  //
+  // opts:
+  //   type: 'straight' | 'curve' | 'ortho' (default inferred: 'curve' if ctx else 'straight')
+  //   u1, u2: explicit handle vectors (start→cOut, cIn←end). Override the
+  //           defaults when the user has manually adjusted handles.
+  //   ctx:    original-path context from getPathContext, used to derive a
+  //           sensible default curve when u1/u2 are not provided.
+  function buildEdgePath(newStart, newEnd, opts) {
+    opts = opts || {};
+    const type = opts.type || (opts.ctx ? 'curve' : 'straight');
     const ndx = newEnd.x - newStart.x, ndy = newEnd.y - newStart.y;
-    const oLen = Math.hypot(odx, ody) || 1;
     const nLen = Math.hypot(ndx, ndy) || 1;
+    const lineAngle = Math.atan2(ndy, ndx);
 
-    const oDir = { x: odx / oLen, y: ody / oLen };
-    const oPerp = { x: -oDir.y, y: oDir.x };
-    const nDir = { x: ndx / nLen, y: ndy / nLen };
-    const nPerp = { x: -nDir.y, y: nDir.x };
+    if (type === 'straight') {
+      return {
+        d: `M${newStart.x},${newStart.y} L${newEnd.x},${newEnd.y}`,
+        startTangent: lineAngle,
+        endTangent: lineAngle,
+      };
+    }
 
-    const u1Perp = ctx.u1.x * oPerp.x + ctx.u1.y * oPerp.y;
-    const u2Perp = ctx.u2.x * oPerp.x + ctx.u2.y * oPerp.y;
+    if (type === 'ortho') {
+      const horizontalFirst = Math.abs(ndx) >= Math.abs(ndy);
+      const corner = horizontalFirst
+        ? { x: newEnd.x, y: newStart.y }
+        : { x: newStart.x, y: newEnd.y };
+      const startTangent = Math.atan2(corner.y - newStart.y, corner.x - newStart.x);
+      const endTangent = Math.atan2(newEnd.y - corner.y, newEnd.x - corner.x);
+      return {
+        d: `M${newStart.x},${newStart.y} L${corner.x},${corner.y} L${newEnd.x},${newEnd.y}`,
+        startTangent, endTangent, corner,
+      };
+    }
 
-    const MIN_BEND = 0.10; // fraction of new line length
-    const sign1 = u1Perp !== 0 ? Math.sign(u1Perp) : 1;
-    const sign2 = u2Perp !== 0 ? Math.sign(u2Perp) : -sign1;
-
-    const scale = nLen / oLen;
-    const u1PerpNew = sign1 * Math.max(Math.abs(u1Perp) * scale, nLen * MIN_BEND);
-    const u2PerpNew = sign2 * Math.max(Math.abs(u2Perp) * scale, nLen * MIN_BEND);
-    const parLen = nLen / 3;
-
-    const u1 = {
-      x: parLen * nDir.x + u1PerpNew * nPerp.x,
-      y: parLen * nDir.y + u1PerpNew * nPerp.y,
-    };
-    const u2 = {
-      x: parLen * nDir.x + u2PerpNew * nPerp.x,
-      y: parLen * nDir.y + u2PerpNew * nPerp.y,
-    };
+    // curve
+    let u1, u2;
+    if (opts.u1 && opts.u2) {
+      u1 = opts.u1;
+      u2 = opts.u2;
+    } else if (opts.ctx) {
+      const ctx = opts.ctx;
+      const odx = ctx.end.x - ctx.start.x, ody = ctx.end.y - ctx.start.y;
+      const oLen = Math.hypot(odx, ody) || 1;
+      const oDir = { x: odx / oLen, y: ody / oLen };
+      const oPerp = { x: -oDir.y, y: oDir.x };
+      const nDir = { x: ndx / nLen, y: ndy / nLen };
+      const nPerp = { x: -nDir.y, y: nDir.x };
+      const u1Perp = ctx.u1.x * oPerp.x + ctx.u1.y * oPerp.y;
+      const u2Perp = ctx.u2.x * oPerp.x + ctx.u2.y * oPerp.y;
+      const MIN_BEND = 0.10;
+      const sign1 = u1Perp !== 0 ? Math.sign(u1Perp) : 1;
+      const sign2 = u2Perp !== 0 ? Math.sign(u2Perp) : -sign1;
+      const scale = nLen / oLen;
+      const u1PerpNew = sign1 * Math.max(Math.abs(u1Perp) * scale, nLen * MIN_BEND);
+      const u2PerpNew = sign2 * Math.max(Math.abs(u2Perp) * scale, nLen * MIN_BEND);
+      const parLen = nLen / 3;
+      u1 = { x: parLen * nDir.x + u1PerpNew * nPerp.x, y: parLen * nDir.y + u1PerpNew * nPerp.y };
+      u2 = { x: parLen * nDir.x + u2PerpNew * nPerp.x, y: parLen * nDir.y + u2PerpNew * nPerp.y };
+    } else {
+      u1 = { x: ndx / 3, y: ndy / 3 };
+      u2 = { x: ndx / 3, y: ndy / 3 };
+    }
     const c1 = { x: newStart.x + u1.x, y: newStart.y + u1.y };
     const c2 = { x: newEnd.x - u2.x, y: newEnd.y - u2.y };
-    return `M${newStart.x},${newStart.y} C${c1.x},${c1.y} ${c2.x},${c2.y} ${newEnd.x},${newEnd.y}`;
+    return {
+      d: `M${newStart.x},${newStart.y} C${c1.x},${c1.y} ${c2.x},${c2.y} ${newEnd.x},${newEnd.y}`,
+      startTangent: Math.atan2(u1.y, u1.x),
+      endTangent: Math.atan2(u2.y, u2.x),
+      c1, c2, u1, u2,
+    };
   }
 
   // Extract original path's start/end positions, tangent angles, and the actual
@@ -218,6 +284,24 @@
     };
   }
 
+  // Geometric extent of a polygon past `anchor` along `outwardAngle`. For an
+  // arrowhead, this is essentially the arrow's length: the distance from the
+  // path-end anchor to the polygon's farthest point in the direction the
+  // arrow points. The path end can then be pulled back by this amount so the
+  // arrow tip lands precisely on the entity boundary.
+  function polygonOutwardExtent(pointsStr, anchor, outwardAngle) {
+    const cos = Math.cos(outwardAngle), sin = Math.sin(outwardAngle);
+    const nums = pointsStr.trim().split(/[\s,]+/).filter((s) => s.length).map(parseFloat);
+    let maxProj = 0;
+    for (let i = 0; i + 1 < nums.length; i += 2) {
+      const dx = nums[i] - anchor.x;
+      const dy = nums[i + 1] - anchor.y;
+      const proj = dx * cos + dy * sin;
+      if (proj > maxProj) maxProj = proj;
+    }
+    return maxProj;
+  }
+
   // Translate + rotate a polygon: move so anchorOld lands at anchorNew, then
   // rotate the whole polygon around anchorNew by dAngle (radians).
   function reorientPolygon(pointsStr, anchorOld, anchorNew, dAngle) {
@@ -239,5 +323,6 @@
     shiftPolygonPoints, shiftPolygonByEnd,
     tAlongLine, lerp,
     bboxCenter, rectExit, buildEdgePath, getPathContext, reorientPolygon,
+    pointOnBboxBorder, nearestBboxBorder, polygonOutwardExtent,
   };
 }));
