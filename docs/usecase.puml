@@ -1,0 +1,31 @@
+@startuml usecase
+title plantumlEx - Use Cases
+left to right direction
+skinparam packageStyle rectangle
+
+actor "다이어그램 작성자\n(Author)" as Author
+actor "문서 열람자\n(Reader)" as Reader
+
+rectangle "plantumlEx" {
+  usecase "다이어그램 작성/수정" as UC_Edit
+  usecase "PlantUML 렌더링" as UC_Render
+  usecase "요소 선택 & 하이라이트" as UC_Select
+  usecase "드래그로 배치 조정" as UC_Drag
+  usecase "레이아웃 저장" as UC_Save
+  usecase "임베드 조회" as UC_Embed
+  usecase "렌더 + 레이아웃 합성" as UC_Compose
+}
+
+Author --> UC_Edit
+Author --> UC_Select
+Author --> UC_Drag
+Author --> UC_Save
+Reader --> UC_Embed
+
+UC_Edit  ..> UC_Render  : <<include>>
+UC_Drag  ..> UC_Select  : <<include>>
+UC_Save  ..> UC_Compose : <<include>>
+UC_Embed ..> UC_Compose : <<include>>
+UC_Compose ..> UC_Render : <<include>>
+
+@enduml
