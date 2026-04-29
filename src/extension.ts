@@ -229,14 +229,14 @@ async function commitInlineEdit(
   edit.replace(target.uri, block.range, args.source.replace(/\n+$/, ''));
   const ok = await vscode.workspace.applyEdit(edit);
   if (ok) {
-    // Don't clear the cache here. The changed block has a NEW hash that's
-    // not in cache yet (so it auto-fetches), while every OTHER block still
-    // has the same hash and renders instantly from cache. Wiping the
-    // cache would force a placeholder flash on every block — including
-    // ones the user didn't touch — which is jarring. Stale entries for
-    // the OLD hash linger but they'll never be queried again unless the
-    // user undoes (in which case cache hit is desirable).
-    refreshActiveMarkdownPreview();
+    // applyEdit changes the document text, which itself triggers VS Code's
+    // markdown extension to re-render the preview. Calling our own
+    // refreshActiveMarkdownPreview() on top of that double-fires the
+    // refresh and can cause unchanged blocks to briefly flash a
+    // placeholder during DOM swap. Trust the natural re-render.
+    //
+    // Cache is intentionally NOT cleared: the changed block has a new
+    // source-hash that auto-fetches; unchanged blocks keep cache hits.
     vscode.window.showInformationMessage(
       `pumlex: 블록 #${args.blockIndex + 1} 갱신됨. Cmd+S로 저장하세요.`,
     );

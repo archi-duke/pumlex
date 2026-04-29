@@ -26,8 +26,8 @@ Order "*" --> "*" Product
 '   "layout": {
 '     "nodes": {
 '       "Order": {
-'         "dx": 224,
-'         "dy": 6
+'         "dx": 313,
+'         "dy": 10
 '       }
 '     },
 '     "edges": {}
@@ -56,8 +56,8 @@ Admin --> UC2
 '   "layout": {
 '     "nodes": {
 '       "Admin": {
-'         "dx": 331,
-'         "dy": -1
+'         "dx": 389,
+'         "dy": -2
 '       }
 '     },
 '     "edges": {
