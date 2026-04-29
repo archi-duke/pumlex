@@ -12,12 +12,21 @@
 
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('./pex-geom'));
+    module.exports = factory(require('./pex-geom'), require('./pex-meta'));
   } else {
-    root.PexInline = factory(root.PexGeom);
+    root.PexInline = factory(root.PexGeom, root.PexMeta);
   }
-})(typeof self !== 'undefined' ? self : this, function (PexGeom) {
+})(typeof self !== 'undefined' ? self : this, function (PexGeom, PexMeta) {
   const SVG_NS = 'http://www.w3.org/2000/svg';
+  const DRAFT_PREFIX = 'pex:draft:';
+
+  // Cheap, stable string hash for draft keys. Source-content based so a draft
+  // follows the diagram regardless of where it sits in the document.
+  function hashString(str) {
+    let h = 5381;
+    for (let i = 0; i < str.length; i++) h = ((h * 33) ^ str.charCodeAt(i)) >>> 0;
+    return h.toString(36);
+  }
 
   // ---- Stylesheet (injected once per document) -----------------------------
   const STYLE_ID = 'pex-inline-styles';
@@ -61,6 +70,26 @@
     }
     .pex-edge-toolbar button:hover { background: #f6f8fa; }
     .pex-edge-toolbar button.active { background: #2563eb; color: white; border-color: #2563eb; }
+    .pex-draft-prompt {
+      margin: 0 0 8px; padding: 6px 10px;
+      background: #fff7ed; border: 1px solid #fed7aa; border-radius: 4px;
+      font: 13px system-ui, sans-serif; color: #9a3412;
+      display: flex; gap: 8px; align-items: center;
+    }
+    .pex-draft-prompt .pex-draft-msg { flex: 1; }
+    .pex-draft-prompt button {
+      padding: 2px 10px; font: 12px system-ui, sans-serif;
+      background: white; border: 1px solid #d0d7de; border-radius: 4px; cursor: pointer;
+    }
+    .pex-draft-prompt button:hover { background: #f6f8fa; }
+    .pex-draft-prompt button.primary { background: #2563eb; color: white; border-color: #2563eb; }
+    .pex-draft-prompt button.primary:hover { filter: brightness(1.05); }
+    .pex-dirty-badge {
+      position: absolute; bottom: 8px; right: 8px;
+      font: 11px system-ui, sans-serif; color: #b45309;
+      background: #fef3c7; border: 1px solid #fde68a; border-radius: 12px;
+      padding: 2px 8px; pointer-events: none; z-index: 6;
+    }
   `;
   function ensureStylesInjected(doc) {
     if (doc.getElementById(STYLE_ID)) return;
@@ -100,18 +129,90 @@
     const svg = container.querySelector('svg');
     if (!svg) throw new Error('PexInline.activate: container has no <svg>');
     const doc = container.ownerDocument || document;
+    const win = doc.defaultView || window;
     ensureStylesInjected(doc);
     container.classList.add('pex-inline-host');
 
+    // ---- Source-aware initialization (preferred over raw `layout`) ---------
+    // Hosts that pass `source` (full text including any embedded `' @startmeta`)
+    // get higher-level conveniences: onSourceChange callback, localStorage
+    // drafts keyed by clean-source hash, restoration prompts.
+    opts = opts || {};
+    const initialSource = typeof opts.source === 'string' ? opts.source : null;
+    let cleanSource = '';
+    let metaLayout = null;
+    if (initialSource && PexMeta) {
+      const parsed = PexMeta.parseSource(initialSource);
+      cleanSource = parsed.source;
+      metaLayout = parsed.meta && parsed.meta.layout;
+    }
+    const sourceHash = cleanSource ? hashString(cleanSource) : null;
+
     const state = {
-      layout: normalizeLayout((opts && opts.layout) || null),
+      layout: normalizeLayout(opts.layout || metaLayout || null),
+      dirty: false,
       selected: null,
       selectedEdge: null,
       dragging: null,
       draggingHandle: null,
     };
-    const onLayoutChange = (opts && opts.onLayoutChange) || (() => {});
-    const fire = () => { try { onLayoutChange(state.layout); } catch (e) { /* host */ } };
+    const onLayoutChange = opts.onLayoutChange || (() => {});
+    const onSourceChange = opts.onSourceChange || null;
+
+    function buildSource() {
+      if (!cleanSource || !PexMeta) return null;
+      const hasLayout = state.layout && (
+        Object.keys(state.layout.nodes || {}).length ||
+        Object.keys(state.layout.edges || {}).length
+      );
+      return hasLayout
+        ? PexMeta.embedMeta(cleanSource, { schema: 1, layout: state.layout })
+        : cleanSource;
+    }
+
+    function saveDraft() {
+      if (!sourceHash) return;
+      try {
+        win.localStorage.setItem(DRAFT_PREFIX + sourceHash, JSON.stringify({
+          source: buildSource(),
+          ts: Date.now(),
+        }));
+      } catch { /* quota / private mode — ignore */ }
+    }
+    function clearDraft() {
+      if (!sourceHash) return;
+      try { win.localStorage.removeItem(DRAFT_PREFIX + sourceHash); } catch {}
+    }
+
+    // Visual "● 저장 필요" badge (L3). Created lazily, removed when clean.
+    let dirtyBadgeEl = null;
+    function updateDirtyBadge() {
+      if (!state.dirty) {
+        if (dirtyBadgeEl) { dirtyBadgeEl.remove(); dirtyBadgeEl = null; }
+        return;
+      }
+      if (!dirtyBadgeEl) {
+        dirtyBadgeEl = doc.createElement('div');
+        dirtyBadgeEl.className = 'pex-dirty-badge';
+        dirtyBadgeEl.textContent = '● 저장 필요';
+        container.appendChild(dirtyBadgeEl);
+      }
+    }
+    function setDirty(d) {
+      const changed = state.dirty !== d;
+      state.dirty = d;
+      if (changed) updateDirtyBadge();
+    }
+
+    const fire = () => {
+      try { onLayoutChange(state.layout); } catch {}
+      if (onSourceChange) {
+        const s = buildSource();
+        if (s !== null) { try { onSourceChange(s); } catch {} }
+      }
+      setDirty(true);
+      saveDraft();
+    };
 
     // ---- ViewBox bookkeeping -----------------------------------------------
     function adjustViewBox() {
@@ -546,20 +647,76 @@
 
     // Reposition the floating toolbar on scroll/resize so it tracks the edge.
     const onReposition = () => { if (state.selectedEdge) showEdgeToolbar(); };
-    const win = doc.defaultView || window;
     win.addEventListener('scroll', onReposition, true);
     win.addEventListener('resize', onReposition);
+
+    // ---- L2: draft restoration ---------------------------------------------
+    // If a localStorage draft exists for this source-hash and differs from the
+    // current source, surface a non-blocking prompt above the SVG.
+    let draftPromptEl = null;
+    function showDraftPrompt(draft) {
+      if (draftPromptEl) return;
+      const ageMin = Math.max(1, Math.floor((Date.now() - (draft.ts || 0)) / 60000));
+      const el = doc.createElement('div');
+      el.className = 'pex-draft-prompt';
+      el.innerHTML =
+        `<span class="pex-draft-msg">저장되지 않은 레이아웃 변경이 있습니다 (~${ageMin}분 전).</span>`
+        + '<button class="primary" data-action="restore">복원</button>'
+        + '<button data-action="discard">무시</button>';
+      el.addEventListener('click', (e) => {
+        const a = e.target.closest('button[data-action]');
+        if (!a) return;
+        if (a.dataset.action === 'restore') {
+          const parsed = PexMeta && PexMeta.parseSource(draft.source);
+          if (parsed && parsed.meta && parsed.meta.layout) {
+            state.layout = normalizeLayout(parsed.meta.layout);
+            svg.querySelectorAll('g.entity').forEach((g) => {
+              const d = state.layout.nodes[entityQname(g)];
+              if (d) g.setAttribute('transform', `translate(${d.dx}, ${d.dy})`);
+              else g.removeAttribute('transform');
+            });
+            applyEdgeFollow();
+            adjustViewBox();
+            fire(); // restored layout is dirty until host saves
+          }
+        } else if (a.dataset.action === 'discard') {
+          clearDraft();
+        }
+        el.remove();
+        draftPromptEl = null;
+      });
+      container.insertBefore(el, container.firstChild);
+      draftPromptEl = el;
+    }
+    if (sourceHash) {
+      try {
+        const raw = win.localStorage.getItem(DRAFT_PREFIX + sourceHash);
+        if (raw) {
+          const draft = JSON.parse(raw);
+          if (draft && typeof draft.source === 'string' && draft.source !== initialSource) {
+            showDraftPrompt(draft);
+          }
+        }
+      } catch {}
+    }
 
     // ---- Public API --------------------------------------------------------
     return {
       getLayout() { return state.layout; },
+      getSource() { return buildSource(); },
+      isDirty() { return state.dirty; },
       setLayout(layout) {
         state.layout = normalizeLayout(layout);
         applyEdgeFollow();
         adjustViewBox();
       },
+      // Host calls this after its own persist succeeds. Clears the dirty
+      // badge AND removes the localStorage draft for this diagram.
+      markSaved() {
+        clearDraft();
+        setDirty(false);
+      },
       deactivate() {
-        // Detach all listeners
         entityHandlers.forEach(({ g, fnDown, fnClick }) => {
           g.removeEventListener('pointerdown', fnDown);
           g.removeEventListener('click', fnClick);
@@ -568,13 +725,14 @@
         svg.removeEventListener('click', onSvgClick);
         win.removeEventListener('scroll', onReposition, true);
         win.removeEventListener('resize', onReposition);
-        // Clean up overlays + classes
         clearHandles();
         const layer = svg.querySelector('g.pex-handle-layer');
         if (layer) layer.remove();
         if (state.selected) state.selected.classList.remove('pex-selected');
         if (state.selectedEdge) state.selectedEdge.classList.remove('pex-edge-selected');
         tb.remove();
+        if (dirtyBadgeEl) dirtyBadgeEl.remove();
+        if (draftPromptEl) draftPromptEl.remove();
         container.classList.remove('pex-inline-host');
       },
     };

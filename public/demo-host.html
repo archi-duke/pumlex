@@ -36,6 +36,21 @@
   .toast.show { opacity: 1; }
   details { margin: 12px 0; }
   details summary { cursor: pointer; color: #2563eb; }
+  .host-bar {
+    margin: 12px 0; padding: 8px 12px; background: #f6f8fa; border: 1px solid #d0d7de;
+    border-radius: 4px; display: flex; gap: 8px; align-items: center; font-size: 13px;
+  }
+  .host-bar-hint { color: #666; font-size: 12px; }
+  .host-bar .mode-btn {
+    padding: 4px 12px; cursor: pointer; border: 1px solid #d0d7de;
+    background: white; border-radius: 4px; font-size: 13px;
+  }
+  .host-bar .mode-btn.active { background: #2563eb; color: white; border-color: #2563eb; cursor: default; }
+  .host-bar .mode-btn[disabled] { opacity: 0.5; cursor: not-allowed; }
+  /* Markdown edit mode: hide per-block toolbars (the markdown text is the
+     source of truth right now), make the textarea editable, draw attention. */
+  body.host-edit-mode .pex-toolbar { display: none !important; }
+  body.host-edit-mode #rawMd { background: #fffbe8; outline: 2px solid #fde68a; }
 </style>
 </head>
 <body>
@@ -44,6 +59,15 @@
     ✎ 편집 = 다이어그램 위에서 직접 편집 (핸들 오버레이 → 드래그 → ✓ 완료) ·
     ↗ 새 창 = 풀 에디터를 별도 창으로 (좌측 소스 패널 포함, postMessage로 회신).
   </p>
+
+  <div class="host-bar">
+    <strong>[호스트 모드]</strong>
+    <button id="btnHostEdit" class="mode-btn">✎ 편집</button>
+    <button id="btnHostSave" class="mode-btn">💾 저장</button>
+    <button id="btnHostView" class="mode-btn">👁 보기</button>
+    <span class="host-bar-hint">변경사항은 자동으로 localStorage 드래프트에 저장됩니다. 저장 누르면 호스트 측에 영구 반영(데모는 localStorage).</span>
+    <button id="btnReload" style="margin-left:auto; padding: 4px 12px; cursor: pointer;">↺ 새로고침</button>
+  </div>
 
   <p>일반 텍스트입니다. 아래는 plantuml 코드 블록 (예: <code>language-plantuml</code>):</p>
 
@@ -106,7 +130,23 @@ Admin --> UC2
 ];
 
 // Track per-block editing session
-const editing = new Map(); // idx -> { inline, startedFrom }
+const editing = new Map(); // idx -> { inline }
+// Mirror of sources[] persisted on host save. If absent, drafts may exist
+// only in localStorage (managed by pex-inline).
+const HOST_STORE_KEY = 'demo-host:sources';
+function loadHostSavedSources() {
+  try { return JSON.parse(localStorage.getItem(HOST_STORE_KEY) || 'null'); } catch { return null; }
+}
+function saveHostSources() {
+  localStorage.setItem(HOST_STORE_KEY, JSON.stringify(sources));
+}
+// Restore from previous host save, if any.
+const __saved = loadHostSavedSources();
+if (Array.isArray(__saved) && __saved.length === sources.length) {
+  for (let i = 0; i < sources.length; i++) {
+    if (typeof __saved[i] === 'string' && __saved[i].length) sources[i] = __saved[i];
+  }
+}
 
 function refreshRawMd() {
   $('rawMd').value = sources.map((s) => '```plantuml\n' + s + '\n```').join('\n\n');
@@ -141,15 +181,14 @@ function startEditing(idx) {
   const editBtn = block.querySelector('.pex-edit-btn');
   if (!renderEl.querySelector('svg')) { toast('아직 렌더링 중'); return; }
 
-  const parsed = PexMeta.parseSource(sources[idx]);
-  const initialLayout = parsed.meta && parsed.meta.layout ? parsed.meta.layout : { nodes: {}, edges: {} };
-  let layout = initialLayout;
-
+  // Use the new source-aware API: pex-inline parses the embedded meta on its
+  // own and reports back updated source-with-meta strings whenever the user
+  // drags / changes edge type. localStorage drafts are managed inside.
   const inline = PexInline.activate(renderEl, {
-    layout: initialLayout,
-    onLayoutChange: (l) => { layout = l; },
+    source: sources[idx],
+    onSourceChange: (newSrc) => { sources[idx] = newSrc; refreshRawMd(); },
   });
-  editing.set(idx, { inline, getLayout: () => layout });
+  editing.set(idx, { inline });
   block.classList.add('editing');
   editBtn.textContent = '✓ 완료';
   editBtn.onclick = () => stopEditing(idx, /* commit */ true);
@@ -158,7 +197,10 @@ function startEditing(idx) {
 function stopEditing(idx, commit) {
   const sess = editing.get(idx);
   if (!sess) return;
-  const layout = sess.getLayout();
+  // sources[idx] is already up to date (onSourceChange fired during edits).
+  // The inline still holds the dirty badge — keep it visible in the post-edit
+  // static view so the user can see "변경됨, 저장 필요". markSaved() is only
+  // called when the host actually persists.
   sess.inline.deactivate();
   editing.delete(idx);
 
@@ -169,16 +211,7 @@ function stopEditing(idx, commit) {
   editBtn.onclick = () => startEditing(idx);
 
   if (commit) {
-    // Re-embed the canonical source-with-meta into sources[idx]
-    const cleanParsed = PexMeta.parseSource(sources[idx]);
-    const hasLayout = layout && (
-      Object.keys(layout.nodes || {}).length || Object.keys(layout.edges || {}).length
-    );
-    sources[idx] = hasLayout
-      ? PexMeta.embedMeta(cleanParsed.source, { schema: 1, layout })
-      : cleanParsed.source;
     refreshRawMd();
-    // Re-render so the static (non-edit) view reflects the layout via server compositing
     renderBlock(idx);
     toast(`블록 ${idx + 1} 갱신`);
   }
@@ -218,6 +251,76 @@ function openInPopup(idx) {
 document.querySelectorAll('.pex-popup-btn').forEach((b) => {
   b.onclick = () => openInPopup(parseInt(b.dataset.idx, 10));
 });
+
+// ---- Markdown edit / save / view modes ----------------------------------
+//
+// 편집  -- enter markdown-edit mode: textarea becomes editable, in-place
+//          diagram editing is suppressed (markdown text is source of truth)
+// 저장  -- if in edit mode, parse textarea back into sources[] first, then
+//          persist to localStorage and call markSaved on inline sessions
+// 보기  -- exit edit mode without committing (textarea reverts from sources[])
+let mode = 'view';
+function setMode(m) {
+  mode = m;
+  document.body.classList.toggle('host-edit-mode', m === 'edit');
+  $('rawMd').readOnly = (m !== 'edit');
+  $('btnHostEdit').classList.toggle('active', m === 'edit');
+  $('btnHostView').classList.toggle('active', m === 'view');
+  $('btnHostEdit').disabled = (m === 'edit');
+  $('btnHostView').disabled = (m === 'view');
+}
+function enterEdit() {
+  // Drop any in-place diagram-edit sessions before manual markdown editing
+  for (const [idx] of editing) stopEditing(idx, /* commit */ true);
+  refreshRawMd(); // sync textarea with current sources[]
+  setMode('edit');
+  $('rawMd').focus();
+}
+// Pull `\`\`\`plantuml ... \`\`\`` blocks back out of the markdown text.
+function parseMarkdownToSources(md) {
+  const re = /```plantuml\r?\n([\s\S]*?)\r?\n```/g;
+  const out = []; let m;
+  while ((m = re.exec(md)) !== null) out.push(m[1]);
+  return out;
+}
+function clearAllDrafts() {
+  sources.forEach((s) => {
+    const clean = PexMeta.parseSource(s).source;
+    if (!clean) return;
+    let h = 5381;
+    for (let i = 0; i < clean.length; i++) h = ((h * 33) ^ clean.charCodeAt(i)) >>> 0;
+    localStorage.removeItem('pex:draft:' + h.toString(36));
+  });
+}
+function hostSave() {
+  // If user was hand-editing markdown, parse it back into sources[]
+  if (mode === 'edit') {
+    const parsed = parseMarkdownToSources($('rawMd').value);
+    if (parsed.length === sources.length) {
+      for (let i = 0; i < sources.length; i++) sources[i] = parsed[i];
+    } else {
+      toast(`⚠ plantuml 블록 수가 ${sources.length}개여야 하는데 ${parsed.length}개`);
+      return;
+    }
+  }
+  saveHostSources();
+  for (const [, sess] of editing) sess.inline.markSaved();
+  clearAllDrafts();
+  setMode('view');
+  refreshRawMd();
+  sources.forEach((_, i) => renderBlock(i));
+  toast('마크다운 저장됨 (localStorage)');
+}
+function exitToView() {
+  // Cancel any unsaved manual markdown edits — restore textarea from sources[]
+  refreshRawMd();
+  setMode('view');
+}
+$('btnHostEdit').onclick = enterEdit;
+$('btnHostSave').onclick = hostSave;
+$('btnHostView').onclick = exitToView;
+$('btnReload').onclick = () => location.reload();
+setMode('view');
 
 // Initial render
 refreshRawMd();
