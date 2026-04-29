@@ -16,7 +16,8 @@
     "Other"
   ],
   "activationEvents": [
-    "onLanguage:markdown"
+    "onLanguage:markdown",
+    "onStartupFinished"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -25,6 +26,12 @@
         "command": "pumlex.hello",
         "title": "pumlex: Hello"
       }
+    ],
+    "markdown.previewScripts": [
+      "./media/preview.js"
+    ],
+    "markdown.previewStyles": [
+      "./media/preview.css"
     ],
     "configuration": {
       "title": "pumlex",

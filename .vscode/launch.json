@@ -6,7 +6,9 @@
       "type": "extensionHost",
       "request": "launch",
       "args": [
-        "--extensionDevelopmentPath=${workspaceFolder}"
+        "--extensionDevelopmentPath=${workspaceFolder}",
+        "--disable-extension=jebbs.plantuml",
+        "--disable-extension=shd101wyy.markdown-preview-enhanced"
       ],
       "outFiles": [
         "${workspaceFolder}/out/**/*.js"

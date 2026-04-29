@@ -1,0 +1,11 @@
+.pumlex-block { margin: 12px 0; }
+.pumlex-block svg { max-width: 100%; height: auto; }
+.pumlex-loading {
+  color: #666; padding: 16px; text-align: center;
+  font: 12px system-ui, -apple-system, sans-serif;
+}
+.pumlex-error {
+  color: #b00; padding: 12px; background: #fef2f2; border: 1px solid #fecaca;
+  border-radius: 4px; font: 13px system-ui, -apple-system, sans-serif;
+}
+.pumlex-error small { color: #999; }
