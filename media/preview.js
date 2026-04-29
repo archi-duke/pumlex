@@ -1,64 +1,115 @@
-// pumlex — VS Code Markdown preview script
+// pumlex — VS Code Markdown preview script (inline mode)
 //
-// VS Code's markdown preview webview ships with a CSP that intentionally
-// omits `connect-src`, so `fetch()` to localhost is blocked even after the
-// "Allow insecure local content" setting. `img-src` however *does* allow
-// `http://localhost:* http://127.0.0.1:*`, so we use an <img> tag pointing
-// at plantumlEx's GET /render-with-layout?src=… endpoint.
+// Companion of `markdownItPlugin.ts`: that plugin renders ```plantuml```
+// blocks as inline SVG inside `<div class="pumlex-block" data-...>`. Here
+// we attach PexInline overlays for in-place editing.
 //
-// URL length cap: typical encoded source under 2 KB, ~8 KB practical limit.
-// Diagrams that exceed this fall back to a clear error message.
+// CSP considerations:
+//   - fetch is blocked (no connect-src) but we don't need it now: the
+//     server-side plugin already inlined the SVG.
+//   - vscode:// URIs work via real anchor clicks (markdown preview's
+//     external link handler routes them to extension's UriHandler).
 
 (function () {
   'use strict';
-
-  // TODO: pull from extension config (pumlex.serverUrl) via a body data
-  // attribute injected by the extension host. Hardcoded default for now.
-  const SERVER_URL = 'http://localhost:3030';
-  const URL_LIMIT = 7800;
 
   function escapeHtml(s) {
     return String(s).replace(/[&<>]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;' }[c]));
   }
 
-  function renderBlock(codeEl) {
-    if (codeEl.dataset.pumlexProcessed) return;
-    codeEl.dataset.pumlexProcessed = '1';
-    const source = codeEl.textContent || '';
-    const pre = codeEl.parentElement;
-    if (!pre) return;
+  function buildVscodeUri(path, params) {
+    const qs = new URLSearchParams(params).toString();
+    return 'vscode://archi-duke.pumlex' + path + '?' + qs;
+  }
 
-    const wrapper = document.createElement('div');
-    wrapper.className = 'pumlex-block';
+  // Decorate a `.pumlex-block` so the user can hover-trigger inline editing.
+  function decorateBlock(blockEl) {
+    if (blockEl.dataset.pumlexDecorated) return;
+    if (blockEl.classList.contains('pumlex-loading')) return;
+    if (!blockEl.querySelector('svg')) return;
+    blockEl.dataset.pumlexDecorated = '1';
 
-    const encoded = encodeURIComponent(source);
-    if (encoded.length > URL_LIMIT) {
-      wrapper.innerHTML =
-        '<div class="pumlex-error">⚠ source가 너무 큼 ('
-        + encoded.length + ' chars, max ' + URL_LIMIT + '). 풀 에디터에서 편집해주세요.</div>';
-      pre.replaceWith(wrapper);
-      return;
+    const blockIndex = parseInt(blockEl.dataset.blockIndex || '0', 10);
+    const initialSource = decodeURIComponent(blockEl.dataset.blockSourceEncoded || '');
+
+    let session = null;
+    let currentSource = initialSource;
+    let editBtn, commitBtn, cancelBtn;
+
+    function enterView() {
+      if (session) { try { session.deactivate(); } catch {} session = null; }
+      blockEl.classList.remove('pumlex-editing');
+      [commitBtn, cancelBtn].forEach((el) => el && el.remove());
+      commitBtn = cancelBtn = null;
+      ensureEditBtn();
     }
 
-    const url = SERVER_URL + '/render-with-layout?src=' + encoded;
-    const img = document.createElement('img');
-    img.alt = 'plantuml diagram';
-    img.style.maxWidth = '100%';
-    img.style.height = 'auto';
-    img.src = url;
-    img.onerror = () => {
-      wrapper.innerHTML =
-        '<div class="pumlex-error">'
-        + '<strong>⚠ pumlex 서버 도달 실패</strong><br>'
-        + '<small>plantumlEx 서버가 ' + escapeHtml(SERVER_URL) + ' 에서 실행 중인지 확인하세요.</small>'
-        + '</div>';
-    };
-    wrapper.appendChild(img);
-    pre.replaceWith(wrapper);
+    function ensureEditBtn() {
+      if (editBtn && blockEl.contains(editBtn)) { editBtn.style.display = ''; return; }
+      editBtn = document.createElement('a');
+      editBtn.className = 'pumlex-btn pumlex-edit-btn';
+      editBtn.textContent = '✎ 편집';
+      // href stays as the editor-uri so even programmatic blocking won't
+      // matter — the user clicks this anchor directly. But here we use a
+      // local handler to enter edit mode without leaving the preview;
+      // clicking does not navigate (preventDefault).
+      editBtn.href = '#';
+      editBtn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        enterEdit();
+      };
+      blockEl.appendChild(editBtn);
+    }
+
+    function enterEdit() {
+      if (typeof PexInline === 'undefined') {
+        console.error('[pumlex] PexInline not loaded');
+        return;
+      }
+      session = PexInline.activate(blockEl, {
+        source: initialSource,
+        useDrafts: false,        // VS Code Hot Exit handles recovery
+        useDirtyBadge: false,    // VS Code's tab ● indicator handles dirty
+        onSourceChange: (src) => {
+          currentSource = src;
+          if (commitBtn) commitBtn.href = buildVscodeUri('/commit', {
+            blockIndex: String(blockIndex), source: src,
+          });
+        },
+      });
+      if (editBtn) editBtn.style.display = 'none';
+      blockEl.classList.add('pumlex-editing');
+
+      commitBtn = document.createElement('a');
+      commitBtn.className = 'pumlex-btn pumlex-commit-btn';
+      commitBtn.textContent = '✓ 적용';
+      commitBtn.title = '편집 결과를 마크다운에 반영';
+      commitBtn.href = buildVscodeUri('/commit', {
+        blockIndex: String(blockIndex), source: currentSource,
+      });
+      // After commit click, VS Code will round-trip applyEdit; the file
+      // change triggers a preview re-render, replacing this block. So we
+      // don't need a manual deactivate here.
+      blockEl.appendChild(commitBtn);
+
+      cancelBtn = document.createElement('button');
+      cancelBtn.className = 'pumlex-btn pumlex-cancel-btn';
+      cancelBtn.textContent = '✗ 취소';
+      cancelBtn.title = '편집 취소';
+      cancelBtn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        enterView();
+      };
+      blockEl.appendChild(cancelBtn);
+    }
+
+    enterView();
   }
 
   function scan() {
-    document.querySelectorAll('pre > code.language-plantuml').forEach(renderBlock);
+    document.querySelectorAll('.pumlex-block').forEach(decorateBlock);
   }
 
   if (document.readyState === 'loading') {

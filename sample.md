@@ -7,18 +7,33 @@
 ```plantuml
 @startuml
 class Customer {
-  +id: UUID
-  +name: String
+   id: UUID
+   name: String
 }
 class Order {
-  +id: UUID
+   id: UUID
 }
 class Product {
-  +sku: String
+   sku: String
 }
 Customer "1" --> "*" Order
 Order "*" --> "*" Product
 @enduml
+
+' @startmeta
+' {
+'   "schema": 1,
+'   "layout": {
+'     "nodes": {
+'       "Order": {
+'         "dx": 224,
+'         "dy": 6
+'       }
+'     },
+'     "edges": {}
+'   }
+' }
+' @endmeta
 ```
 
 ## 유스케이스 다이어그램 (메타 임베드 포함)
@@ -36,7 +51,41 @@ Admin --> UC2
 @enduml
 
 ' @startmeta
-' { "schema": 1, "layout": { "nodes": { "Admin": { "dx": 380, "dy": 0 } }, "edges": {} } }
+' {
+'   "schema": 1,
+'   "layout": {
+'     "nodes": {
+'       "Admin": {
+'         "dx": 358,
+'         "dy": -1
+'       }
+'     },
+'     "edges": {
+'       "Admin__System.UC2": {
+'         "type": "curve",
+'         "u2": {
+'           "x": -66.93325805664062,
+'           "y": 8.740741995181736
+'         },
+'         "u1": {
+'           "x": -40.30217788497218,
+'           "y": 5.460802296456813
+'         }
+'       },
+'       "Admin__System.UC1": {
+'         "type": "curve",
+'         "u2": {
+'           "x": -54.547935485839844,
+'           "y": -22.11752976096841
+'         },
+'         "u1": {
+'           "x": -39.40150263988092,
+'           "y": -5.250577329410255
+'         }
+'       }
+'     }
+'   }
+' }
 ' @endmeta
 ```
 

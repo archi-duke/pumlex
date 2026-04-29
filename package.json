@@ -25,14 +25,23 @@
       {
         "command": "pumlex.hello",
         "title": "pumlex: Hello"
+      },
+      {
+        "command": "pumlex.editBlock",
+        "title": "pumlex: Edit Block (internal)",
+        "enablement": "false"
       }
     ],
     "markdown.previewScripts": [
+      "./lib/pex-geom.js",
+      "./lib/pex-meta.js",
+      "./lib/pex-inline.js",
       "./media/preview.js"
     ],
     "markdown.previewStyles": [
       "./media/preview.css"
     ],
+    "markdown.markdownItPlugins": true,
     "configuration": {
       "title": "pumlex",
       "properties": {
