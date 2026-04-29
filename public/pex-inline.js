@@ -139,6 +139,12 @@
     // drafts keyed by clean-source hash, restoration prompts.
     opts = opts || {};
     const initialSource = typeof opts.source === 'string' ? opts.source : null;
+    // Hosts that already provide their own dirty-tracking + recovery
+    // (notably VS Code: ● tab indicator + Hot Exit) can opt out of L2/L3 by
+    // passing `useDrafts: false` and `useDirtyBadge: false`. Default true to
+    // protect plain browser hosts.
+    const useDrafts = opts.useDrafts !== false;
+    const useDirtyBadge = opts.useDirtyBadge !== false;
     let cleanSource = '';
     let metaLayout = null;
     if (initialSource && PexMeta) {
@@ -146,7 +152,7 @@
       cleanSource = parsed.source;
       metaLayout = parsed.meta && parsed.meta.layout;
     }
-    const sourceHash = cleanSource ? hashString(cleanSource) : null;
+    const sourceHash = (cleanSource && useDrafts) ? hashString(cleanSource) : null;
 
     const state = {
       layout: normalizeLayout(opts.layout || metaLayout || null),
@@ -187,6 +193,7 @@
     // Visual "● 저장 필요" badge (L3). Created lazily, removed when clean.
     let dirtyBadgeEl = null;
     function updateDirtyBadge() {
+      if (!useDirtyBadge) return; // host opted out
       if (!state.dirty) {
         if (dirtyBadgeEl) { dirtyBadgeEl.remove(); dirtyBadgeEl = null; }
         return;
