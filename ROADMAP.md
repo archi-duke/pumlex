@@ -19,7 +19,7 @@
 
 ## C. 배포 / 패키징  ★★★
 
-- [ ] **C-1** `vsce package` → `.vsix` 빌드, 사내 배포 가능 형태
+- [x] **C-1** `vsce package` → `.vsix` 빌드 — `npm run package`로 `pumlex-0.0.1.vsix` 생성. `code --install-extension <vsix>` 로 설치 가능. LICENSE / .vscodeignore 추가.
 - [ ] **C-2** README 사용자 가이드 (plantumlEx 서버 실행, CSP 설정, 첫 실행 흐름)
 - [ ] **C-3** `pumlex.serverUrl` 설정 변경 시 캐시 무효화 동작 검증
 
@@ -48,3 +48,4 @@
 - 2026-04-29: 초기 ROADMAP 정리, 안정성 작업부터 시작.
 - 2026-04-29: **A-1 / A-3** 완료 — refresh fallback + debounce, commit 후 cache 미clear (변경 블록만 자연 재fetch). 진단 커맨드 추가.
 - 2026-04-29: **A-2** 완료 — connection error 분리 + 안내 + 재시도 URI 흐름. **A 카테고리 (안정성) 전체 완료**.
+- 2026-04-29: **C-1** 완료 — vsce 통한 .vsix 빌드. 사내 배포 / `code --install-extension` 설치 가능.
