@@ -1,0 +1,50 @@
+{
+  "name": "pumlex",
+  "displayName": "pumlex",
+  "description": "Inline plantuml layout editing in VS Code Markdown preview, powered by plantumlEx",
+  "version": "0.0.1",
+  "publisher": "archi-duke",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/archi-duke/pumlex.git"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:markdown"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "pumlex.hello",
+        "title": "pumlex: Hello"
+      }
+    ],
+    "configuration": {
+      "title": "pumlex",
+      "properties": {
+        "pumlex.serverUrl": {
+          "type": "string",
+          "default": "http://localhost:3030",
+          "description": "plantumlEx server base URL (used for /render-with-layout)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.4.0"
+  }
+}
