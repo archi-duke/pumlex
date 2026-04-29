@@ -131,7 +131,36 @@ export function clearPumlexCache() {
   cache.clear();
 }
 
-/** Trigger preview reload after a cache update. */
+/** Diagnostic: current cache size (number of unique source-hashes rendered). */
+export function getPumlexCacheSize() { return cache.size; }
+/** Diagnostic: number of in-flight (background) fetches. */
+export function getPumlexInFlightCount() { return inFlight.size; }
+
+/** Trigger preview reload after a cache update.
+ *
+ * Tries the lighter `markdown.preview.refresh` (refreshes the focused
+ * preview) first, falling back to `markdown.api.reloadPlugins` (reloads
+ * the entire markdown engine — heavier but always available). Multiple
+ * back-to-back calls are coalesced to one refresh so a doc with many
+ * plantuml blocks doesn't trigger one reload per finished fetch. */
+let refreshTimer: NodeJS.Timeout | null = null;
+let refreshAttempts = 0;
 export function refreshActiveMarkdownPreview() {
-  vscode.commands.executeCommand('markdown.api.reloadPlugins');
+  if (refreshTimer) clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(async () => {
+    refreshTimer = null;
+    refreshAttempts++;
+    const tryCmd = async (id: string): Promise<boolean> => {
+      try { await vscode.commands.executeCommand(id); return true; }
+      catch (e) { console.warn(`pumlex: ${id} failed`, e); return false; }
+    };
+    const ok = (await tryCmd('markdown.preview.refresh'))
+      || (await tryCmd('markdown.api.reloadPlugins'));
+    if (!ok) {
+      console.error('pumlex: no preview-refresh command worked. Diagrams may stay as placeholders until the user touches the file.');
+    }
+  }, 120);
 }
+
+/** Diagnostic for tests. */
+export function getRefreshAttemptCount() { return refreshAttempts; }

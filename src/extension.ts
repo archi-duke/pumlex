@@ -1,7 +1,14 @@
 import * as vscode from 'vscode';
 import { findNthPlantumlBlock } from './markdownUtils';
 import { openEditorPanel } from './editorPanel';
-import { createMarkdownItPlugin, clearPumlexCache, refreshActiveMarkdownPreview } from './markdownItPlugin';
+import {
+  createMarkdownItPlugin,
+  clearPumlexCache,
+  refreshActiveMarkdownPreview,
+  getPumlexCacheSize,
+  getPumlexInFlightCount,
+  getRefreshAttemptCount,
+} from './markdownItPlugin';
 
 // pumlex extension host.
 //
@@ -107,6 +114,31 @@ export function activate(context: vscode.ExtensionContext) {
       const serverUrl = cfg.get<string>('serverUrl') || '(unset)';
       vscode.window.showInformationMessage(`pumlex active. server: ${serverUrl}`);
     }),
+    vscode.commands.registerCommand('pumlex.clearCache', () => {
+      const before = getPumlexCacheSize();
+      clearPumlexCache();
+      refreshActiveMarkdownPreview();
+      vscode.window.showInformationMessage(
+        `pumlex: cache cleared (${before} entries removed). 미리보기를 새로고침합니다.`,
+      );
+    }),
+    vscode.commands.registerCommand('pumlex.showStatus', async () => {
+      const cfg = vscode.workspace.getConfiguration('pumlex');
+      const url = cfg.get<string>('serverUrl') || '(unset)';
+      let serverStatus = '?';
+      try {
+        const r = await fetch(url + '/');
+        serverStatus = r.ok ? `OK (HTTP ${r.status})` : `HTTP ${r.status}`;
+      } catch (e: any) { serverStatus = `unreachable: ${e?.message || e}`; }
+      const lines = [
+        `serverUrl: ${url}`,
+        `server reachable: ${serverStatus}`,
+        `cache entries: ${getPumlexCacheSize()}`,
+        `in-flight fetches: ${getPumlexInFlightCount()}`,
+        `refresh attempts: ${getRefreshAttemptCount()}`,
+      ];
+      vscode.window.showInformationMessage('pumlex status:\n' + lines.join('\n'), { modal: true });
+    }),
     // Internal command (palette-hidden via enablement: false). Useful for
     // direct testing — same code path that the URI handler uses.
     vscode.commands.registerCommand('pumlex.editBlock', (args: EditBlockArgs) => handleEditBlock(context, args)),
@@ -186,10 +218,13 @@ async function commitInlineEdit(
   edit.replace(target.uri, block.range, args.source.replace(/\n+$/, ''));
   const ok = await vscode.workspace.applyEdit(edit);
   if (ok) {
-    // Cache is now stale for the *previous* hash; the new content has a
-    // different hash so it'll trigger a fresh fetch on next render. Trigger
-    // a preview refresh to surface the change immediately.
-    clearPumlexCache();
+    // Don't clear the cache here. The changed block has a NEW hash that's
+    // not in cache yet (so it auto-fetches), while every OTHER block still
+    // has the same hash and renders instantly from cache. Wiping the
+    // cache would force a placeholder flash on every block — including
+    // ones the user didn't touch — which is jarring. Stale entries for
+    // the OLD hash linger but they'll never be queried again unless the
+    // user undoes (in which case cache hit is desirable).
     refreshActiveMarkdownPreview();
     vscode.window.showInformationMessage(
       `pumlex: 블록 #${args.blockIndex + 1} 갱신됨. Cmd+S로 저장하세요.`,

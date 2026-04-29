@@ -27,6 +27,14 @@
         "title": "pumlex: Hello"
       },
       {
+        "command": "pumlex.clearCache",
+        "title": "pumlex: Clear Cache (force re-render)"
+      },
+      {
+        "command": "pumlex.showStatus",
+        "title": "pumlex: Show Status"
+      },
+      {
         "command": "pumlex.editBlock",
         "title": "pumlex: Edit Block (internal)",
         "enablement": "false"

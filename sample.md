@@ -56,7 +56,7 @@ Admin --> UC2
 '   "layout": {
 '     "nodes": {
 '       "Admin": {
-'         "dx": 358,
+'         "dx": 331,
 '         "dy": -1
 '       }
 '     },
