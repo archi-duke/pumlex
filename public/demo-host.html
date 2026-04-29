@@ -11,12 +11,19 @@
     position: relative; background: #fff; border: 1px solid #d0d7de; border-radius: 6px;
     padding: 12px; margin: 16px 0;
   }
-  .pex-block .pex-edit-btn {
-    position: absolute; top: 8px; right: 8px; padding: 4px 10px; cursor: pointer;
-    border: 1px solid #d0d7de; background: #f6f8fa; border-radius: 4px; font-size: 12px;
-    z-index: 5;
+  .pex-block .pex-toolbar {
+    position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; z-index: 5;
+    opacity: 0; transition: opacity 0.15s ease-in;
   }
-  .pex-block .pex-edit-btn:hover { background: #e7ecf1; }
+  /* Reveal toolbar on hover, on keyboard focus, or while editing. */
+  .pex-block:hover .pex-toolbar,
+  .pex-block:focus-within .pex-toolbar,
+  .pex-block.editing .pex-toolbar { opacity: 1; }
+  .pex-block .pex-toolbar button {
+    padding: 4px 10px; cursor: pointer; border: 1px solid #d0d7de;
+    background: #f6f8fa; border-radius: 4px; font-size: 12px;
+  }
+  .pex-block .pex-toolbar button:hover { background: #e7ecf1; }
   .pex-block.editing .pex-edit-btn { background: #2563eb; color: #fff; border-color: #2563eb; }
   .pex-block svg { max-width: 100%; height: auto; }
   .pex-block .pex-loading { color: #666; padding: 24px; text-align: center; }
@@ -33,19 +40,28 @@
 </head>
 <body>
   <h1>호스트 통합 데모 — 인라인 편집</h1>
-  <p class="sub">✎ 편집 클릭 → 다이어그램 위에 핸들 직접 표시 → 드래그·엣지수정 → ✓ 완료 클릭 → 마크다운 소스가 메타와 함께 자동 갱신.</p>
+  <p class="sub">
+    ✎ 편집 = 다이어그램 위에서 직접 편집 (핸들 오버레이 → 드래그 → ✓ 완료) ·
+    ↗ 새 창 = 풀 에디터를 별도 창으로 (좌측 소스 패널 포함, postMessage로 회신).
+  </p>
 
   <p>일반 텍스트입니다. 아래는 plantuml 코드 블록 (예: <code>language-plantuml</code>):</p>
 
   <div class="pex-block" data-source-id="0">
-    <button class="pex-edit-btn" data-idx="0">✎ 편집</button>
+    <div class="pex-toolbar">
+      <button class="pex-popup-btn" data-idx="0" title="풀 에디터를 새 창으로 띄움">↗ 새 창</button>
+      <button class="pex-edit-btn"  data-idx="0">✎ 편집</button>
+    </div>
     <div class="pex-render"><div class="pex-loading">렌더링 중…</div></div>
   </div>
 
   <p>또 다른 plantuml 블록:</p>
 
   <div class="pex-block" data-source-id="1">
-    <button class="pex-edit-btn" data-idx="1">✎ 편집</button>
+    <div class="pex-toolbar">
+      <button class="pex-popup-btn" data-idx="1" title="풀 에디터를 새 창으로 띄움">↗ 새 창</button>
+      <button class="pex-edit-btn"  data-idx="1">✎ 편집</button>
+    </div>
     <div class="pex-render"><div class="pex-loading">렌더링 중…</div></div>
   </div>
 
@@ -170,6 +186,37 @@ function stopEditing(idx, commit) {
 
 document.querySelectorAll('.pex-edit-btn').forEach((b) => {
   b.onclick = () => startEditing(parseInt(b.dataset.idx, 10));
+});
+
+// "↗ 새 창" — open the full editor in a popup, hand the source over via
+// postMessage, accept the updated source back and treat it the same as
+// an in-place commit.
+function openInPopup(idx) {
+  // If an in-place edit is in progress on this block, drop it first so
+  // there's only one editing surface at a time.
+  if (editing.has(idx)) stopEditing(idx, /* commit */ false);
+
+  const popup = window.open(PLANTUMLEX + '/edit?embed=1', `pex-popup-${idx}`, 'width=1280,height=820');
+  if (!popup) { toast('팝업 차단을 해제해주세요'); return; }
+
+  const onMessage = (e) => {
+    const d = e.data; if (!d || typeof d !== 'object') return;
+    if (d.type === 'pex-ready') {
+      popup.postMessage({ type: 'pex-load', source: sources[idx] }, '*');
+    } else if (d.type === 'pex-source-updated' && typeof d.source === 'string') {
+      sources[idx] = d.source;
+      refreshRawMd();
+      renderBlock(idx);
+      toast(`블록 ${idx + 1} 갱신 (새 창)`);
+      window.removeEventListener('message', onMessage);
+    } else if (d.type === 'pex-cancel') {
+      window.removeEventListener('message', onMessage);
+    }
+  };
+  window.addEventListener('message', onMessage);
+}
+document.querySelectorAll('.pex-popup-btn').forEach((b) => {
+  b.onclick = () => openInPopup(parseInt(b.dataset.idx, 10));
 });
 
 // Initial render
