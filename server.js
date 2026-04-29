@@ -388,6 +388,35 @@ app.post('/render-with-layout', async (req, res) => {
   }
 });
 
+// GET variant for hosts that can't POST from a CSP-restricted webview but
+// CAN load images from localhost (notably VS Code's markdown preview, whose
+// CSP omits `connect-src` but allows `img-src http://localhost:* …`).
+//
+// `?src=…` URL-encoded source. URL length limits (~8KB practical) cap the
+// diagram size; long ones should fall back to a different transport.
+//
+// Errors are returned as a small SVG (not 500) so an `<img>` tag still
+// renders something the user can read instead of a broken-image icon.
+function renderErrorSvg(msg) {
+  const safe = String(msg).replace(/[<>&]/g, (c) => ({ '<':'&lt;','>':'&gt;','&':'&amp;' }[c]));
+  return `<?xml version="1.0" encoding="UTF-8"?>` +
+    `<svg xmlns="http://www.w3.org/2000/svg" width="560" height="64" viewBox="0 0 560 64">` +
+      `<rect width="560" height="64" fill="#fef2f2" stroke="#fecaca" stroke-width="1"/>` +
+      `<text x="12" y="28" font-family="-apple-system,system-ui,sans-serif" font-size="13" fill="#b91c1c" font-weight="bold">⚠ pumlex 렌더링 오류</text>` +
+      `<text x="12" y="48" font-family="ui-monospace,Menlo,monospace" font-size="11" fill="#7f1d1d">${safe.slice(0, 110)}</text>` +
+    `</svg>`;
+}
+app.get('/render-with-layout', async (req, res) => {
+  try {
+    const src = req.query.src;
+    if (typeof src !== 'string' || !src.trim()) throw new Error('missing ?src');
+    const svg = await renderWithLayoutFromBody(src);
+    res.type('image/svg+xml').send(svg);
+  } catch (e) {
+    res.type('image/svg+xml').send(renderErrorSvg(e.message || String(e)));
+  }
+});
+
 app.post('/diagrams', (req, res) => {
   const id = crypto.randomBytes(6).toString('hex');
   const { name = 'Untitled', source = '' } = req.body || {};
