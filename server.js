@@ -5,10 +5,27 @@ const crypto = require('crypto');
 const cheerio = require('cheerio');
 const plantumlEncoder = require('plantuml-encoder');
 const PexGeom = require('./public/pex-geom');
+const PexMeta = require('./public/pex-meta');
+
+const META_SCHEMA = 1;
 
 const app = express();
 app.use(express.json({ limit: '4mb' }));
+// `/render-with-layout` accepts `text/plain` (raw .puml source) bodies so a
+// markdown viewer can POST a code block verbatim without JSON wrapping.
+app.use(express.text({ type: 'text/plain', limit: '4mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Open CORS so embeds from a different origin (GoJIRA-App at :3000, a markdown
+// viewer page, etc.) can hit the render endpoints. The data we serve is just
+// SVG/diagram bytes; nothing privileged.
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
 
 const DATA_DIR = path.join(__dirname, 'data');
 const DIAGRAMS_DIR = path.join(DATA_DIR, 'diagrams');
@@ -238,31 +255,170 @@ function entityBBox($, $entity) {
     const pts = ($(el).attr('points') || '').trim().split(/[\s,]+/).map(parseFloat);
     for (let i = 0; i + 1 < pts.length; i += 2) consider(pts[i], pts[i + 1], pts[i], pts[i + 1]);
   });
+  // Actors and other composite entities use <path> (stick figure) and
+  // sometimes <line>. Without these, the server-side bbox would be only
+  // the actor's head ellipse, and arrow anchors on a moved actor would
+  // start from the head instead of the actor's true edge.
+  $entity.find('path').each((_, el) => {
+    // Coarse but safe: strip command letters, treat every number pair as a
+    // coordinate. PlantUML's actor stick-figure path is plain M/L commands
+    // so this is exact; for general curves it overestimates slightly but
+    // never undershoots, which is what we want for a containing bbox.
+    const d = $(el).attr('d') || '';
+    const nums = d.replace(/[A-Za-z]/g, ' ')
+      .trim().split(/[\s,]+/).map(parseFloat).filter((n) => !Number.isNaN(n));
+    for (let i = 0; i + 1 < nums.length; i += 2) consider(nums[i], nums[i + 1], nums[i], nums[i + 1]);
+  });
+  $entity.find('line').each((_, el) => {
+    const $el = $(el);
+    const x1 = parseFloat($el.attr('x1') || 0);
+    const y1 = parseFloat($el.attr('y1') || 0);
+    const x2 = parseFloat($el.attr('x2') || 0);
+    const y2 = parseFloat($el.attr('y2') || 0);
+    consider(Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2));
+  });
+  // Text labels often extend the visual bbox beyond the geometry shapes
+  // (most importantly: actor labels sit BELOW the stick figure). Without
+  // including them the server's bbox is smaller than the browser's
+  // getBBox, and anchor/rectExit calculations land at slightly different
+  // points → visible drift between live edit and post-save composite.
+  $entity.find('text').each((_, el) => {
+    const $el = $(el);
+    const x = parseFloat($el.attr('x') || 0);
+    const y = parseFloat($el.attr('y') || 0);
+    if (Number.isNaN(x) || Number.isNaN(y)) return;
+    const fontSize = parseFloat($el.attr('font-size') || 14);
+    let width = parseFloat($el.attr('textLength'));
+    if (!width || Number.isNaN(width)) {
+      // Heuristic: ~0.6em per char for proportional fonts.
+      const txt = $el.text() || '';
+      width = txt.length * fontSize * 0.6;
+    }
+    // SVG <text>'s y is the baseline. Approximate ascender ~0.85em /
+    // descender ~0.15em above/below it. Slightly conservative on each
+    // side keeps the bbox a hair larger than the rendered glyphs.
+    consider(x, y - fontSize * 0.85, x + width, y + fontSize * 0.15);
+  });
   if (minX === Infinity) return null;
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 }
 
-const diagramPath = (id) => path.join(DIAGRAMS_DIR, `${id}.json`);
-const loadDiagram = (id) => {
-  const p = diagramPath(id);
-  return fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : null;
-};
-const saveDiagram = (id, data) => fs.writeFileSync(diagramPath(id), JSON.stringify(data, null, 2));
+const pumlPath = (id) => path.join(DIAGRAMS_DIR, `${id}.puml`);
+const legacyJsonPath = (id) => path.join(DIAGRAMS_DIR, `${id}.json`);
+
+// Diagram in-memory shape: { id, name, source, layout, updatedAt }.
+// On disk: a single .puml file containing the user's clean source plus a
+// commented `' @startmeta ... ' @endmeta` block carrying name/layout/etc.
+// Legacy `.json` files are still readable; once a diagram is saved through
+// the new path it is upgraded to `.puml` (and the legacy file removed).
+function loadDiagram(id) {
+  const pp = pumlPath(id);
+  if (fs.existsSync(pp)) {
+    const full = fs.readFileSync(pp, 'utf8');
+    const { source, meta } = PexMeta.parseSource(full);
+    const m = meta || {};
+    return {
+      id,
+      name: m.name || 'Untitled',
+      source,
+      layout: normalizeLayout(m.layout),
+      updatedAt: m.updatedAt || 0,
+    };
+  }
+  const lp = legacyJsonPath(id);
+  if (fs.existsSync(lp)) {
+    const d = JSON.parse(fs.readFileSync(lp, 'utf8'));
+    return {
+      id,
+      name: d.name || 'Untitled',
+      source: d.source || '',
+      layout: normalizeLayout(d.layout),
+      updatedAt: d.updatedAt || 0,
+    };
+  }
+  return null;
+}
+
+function saveDiagram(id, data) {
+  const meta = {
+    schema: META_SCHEMA,
+    name: data.name || 'Untitled',
+    layout: normalizeLayout(data.layout),
+    updatedAt: data.updatedAt || Date.now(),
+  };
+  const full = PexMeta.embedMeta(data.source || '', meta);
+  fs.writeFileSync(pumlPath(id), full);
+  // Best-effort cleanup of the old JSON sidecar after a successful upgrade.
+  const lp = legacyJsonPath(id);
+  if (fs.existsSync(lp)) { try { fs.unlinkSync(lp); } catch { /* ignore */ } }
+}
 
 app.post('/render', async (req, res) => {
   try {
-    const svg = await renderSvg(req.body.source || '');
+    // Strip any embedded meta block — PlantUML's /svg/ endpoint rejects
+    // content after `@enduml`, even when each line is a `'` comment.
+    const clean = PexMeta.stripMeta(req.body.source || '');
+    const svg = await renderSvg(clean);
     res.type('image/svg+xml').send(svg);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
+// One-shot rendering for stateless hosts (markdown viewers, VS Code preview):
+// accepts a full `.puml` body — clean source plus the `' @startmeta ... '
+// @endmeta` block — and returns a layout-applied SVG. No diagram is stored.
+async function renderWithLayoutFromBody(body) {
+  const raw = (typeof body === 'string') ? body
+            : (body && typeof body.source === 'string') ? body.source
+            : '';
+  const { source: clean, meta } = PexMeta.parseSource(raw);
+  if (!clean.trim()) throw new Error('empty source');
+  const baseSvg = await renderSvg(clean);
+  const layout = (meta && meta.layout) ? meta.layout : null;
+  return layout ? applyLayout(baseSvg, layout) : baseSvg;
+}
+
+app.post('/render-with-layout', async (req, res) => {
+  try {
+    const svg = await renderWithLayoutFromBody(req.body);
+    res.type('image/svg+xml').send(svg);
+  } catch (e) {
+    res.status(500).type('text/plain').send(`error: ${e.message}`);
+  }
+});
+
 app.post('/diagrams', (req, res) => {
   const id = crypto.randomBytes(6).toString('hex');
   const { name = 'Untitled', source = '' } = req.body || {};
-  saveDiagram(id, { id, name, source, layout: {}, updatedAt: Date.now() });
+  // If the incoming source already has an embedded meta block, prefer its
+  // layout so importing a `.puml` file round-trips its prior edits.
+  const parsed = PexMeta.parseSource(source);
+  saveDiagram(id, {
+    id,
+    name: (parsed.meta && parsed.meta.name) || name,
+    source: parsed.source,
+    layout: normalizeLayout(parsed.meta && parsed.meta.layout),
+    updatedAt: Date.now(),
+  });
   res.json({ id });
+});
+
+// Raw `.puml` (source + embedded meta) for download / sharing.
+// MUST be registered before `/diagrams/:id` — otherwise that route's `:id`
+// would greedily match `abc.puml`.
+app.get('/diagrams/:id.puml', (req, res) => {
+  const d = loadDiagram(req.params.id);
+  if (!d) return res.status(404).type('text/plain').send('not found');
+  const full = PexMeta.embedMeta(d.source || '', {
+    schema: META_SCHEMA,
+    name: d.name,
+    layout: d.layout,
+    updatedAt: d.updatedAt,
+  });
+  res.type('text/plain; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${d.id}.puml"`);
+  res.send(full);
 });
 
 app.get('/diagrams/:id', (req, res) => {
@@ -272,19 +428,28 @@ app.get('/diagrams/:id', (req, res) => {
 });
 
 app.put('/diagrams/:id', (req, res) => {
-  const d = loadDiagram(req.params.id) || { id: req.params.id, layout: {} };
+  const existing = loadDiagram(req.params.id) || { id: req.params.id, layout: {}, name: 'Untitled', source: '' };
   const { source, name } = req.body || {};
-  if (source !== undefined) d.source = source;
-  if (name !== undefined) d.name = name;
-  d.updatedAt = Date.now();
-  saveDiagram(req.params.id, d);
+  if (source !== undefined) {
+    // Accept either clean source or already-embedded `.puml`. If the latter,
+    // adopt its meta as well so a paste-import is lossless.
+    const parsed = PexMeta.parseSource(source);
+    existing.source = parsed.source;
+    if (parsed.meta) {
+      if (parsed.meta.name && name === undefined) existing.name = parsed.meta.name;
+      if (parsed.meta.layout) existing.layout = normalizeLayout(parsed.meta.layout);
+    }
+  }
+  if (name !== undefined) existing.name = name;
+  existing.updatedAt = Date.now();
+  saveDiagram(req.params.id, existing);
   res.json({ ok: true });
 });
 
 app.put('/layouts/:id', (req, res) => {
   const d = loadDiagram(req.params.id);
   if (!d) return res.status(404).json({ error: 'not found' });
-  d.layout = (req.body && req.body.layout) || {};
+  d.layout = normalizeLayout((req.body && req.body.layout) || {});
   d.updatedAt = Date.now();
   saveDiagram(req.params.id, d);
   res.json({ ok: true });
@@ -328,6 +493,9 @@ ${svg}
 });
 
 app.get('/edit/:id', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'edit.html')));
+// `/edit` (no id) — used by the embed/popup integration which has no
+// pre-existing diagram and gets its source pushed in via `postMessage`.
+app.get('/edit', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'edit.html')));
 app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'edit.html')));
 
 function escapeHtml(s) {

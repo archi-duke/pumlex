@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<title>plantumlEx — host integration demo (in-place edit)</title>
+<style>
+  body { margin: 0; padding: 24px 32px; font: 14px/1.55 system-ui, sans-serif; max-width: 980px; color: #222; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: #666; margin-bottom: 24px; }
+  .pex-block {
+    position: relative; background: #fff; border: 1px solid #d0d7de; border-radius: 6px;
+    padding: 12px; margin: 16px 0;
+  }
+  .pex-block .pex-edit-btn {
+    position: absolute; top: 8px; right: 8px; padding: 4px 10px; cursor: pointer;
+    border: 1px solid #d0d7de; background: #f6f8fa; border-radius: 4px; font-size: 12px;
+    z-index: 5;
+  }
+  .pex-block .pex-edit-btn:hover { background: #e7ecf1; }
+  .pex-block.editing .pex-edit-btn { background: #2563eb; color: #fff; border-color: #2563eb; }
+  .pex-block svg { max-width: 100%; height: auto; }
+  .pex-block .pex-loading { color: #666; padding: 24px; text-align: center; }
+  textarea { width: 100%; height: 240px; font: 12px/1.4 ui-monospace, Menlo, monospace; }
+  .toast {
+    position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+    background: #1f2937; color: #fff; padding: 8px 16px; border-radius: 4px;
+    font-size: 13px; transition: opacity .3s; opacity: 0;
+  }
+  .toast.show { opacity: 1; }
+  details { margin: 12px 0; }
+  details summary { cursor: pointer; color: #2563eb; }
+</style>
+</head>
+<body>
+  <h1>호스트 통합 데모 — 인라인 편집</h1>
+  <p class="sub">✎ 편집 클릭 → 다이어그램 위에 핸들 직접 표시 → 드래그·엣지수정 → ✓ 완료 클릭 → 마크다운 소스가 메타와 함께 자동 갱신.</p>
+
+  <p>일반 텍스트입니다. 아래는 plantuml 코드 블록 (예: <code>language-plantuml</code>):</p>
+
+  <div class="pex-block" data-source-id="0">
+    <button class="pex-edit-btn" data-idx="0">✎ 편집</button>
+    <div class="pex-render"><div class="pex-loading">렌더링 중…</div></div>
+  </div>
+
+  <p>또 다른 plantuml 블록:</p>
+
+  <div class="pex-block" data-source-id="1">
+    <button class="pex-edit-btn" data-idx="1">✎ 편집</button>
+    <div class="pex-render"><div class="pex-loading">렌더링 중…</div></div>
+  </div>
+
+  <details open>
+    <summary>마크다운 원본 (편집 시 메타 포함하여 자동 갱신)</summary>
+    <textarea id="rawMd" readonly></textarea>
+  </details>
+
+  <div class="toast" id="toast"></div>
+
+<script src="/pex-geom.js"></script>
+<script src="/pex-meta.js"></script>
+<script src="/pex-inline.js"></script>
+<script>
+const PLANTUMLEX = location.origin;
+const $ = (id) => document.getElementById(id);
+
+const sources = [
+  `@startuml
+class Customer {
+  +id: UUID
+}
+class Order {
+  +id: UUID
+}
+class Product {
+  +sku: String
+}
+Customer "1" --> "*" Order
+Order "*" --> "*" Product
+@enduml`,
+  `@startuml
+left to right direction
+actor Admin
+rectangle System {
+  usecase "Manage Users" as UC1
+  usecase "View Reports" as UC2
+}
+Admin --> UC1
+Admin --> UC2
+@enduml`,
+];
+
+// Track per-block editing session
+const editing = new Map(); // idx -> { inline, startedFrom }
+
+function refreshRawMd() {
+  $('rawMd').value = sources.map((s) => '```plantuml\n' + s + '\n```').join('\n\n');
+}
+function toast(msg) {
+  const t = $('toast'); t.textContent = msg; t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 1600);
+}
+
+async function renderBlock(idx) {
+  const blockEl = document.querySelector(`.pex-block[data-source-id="${idx}"] .pex-render`);
+  blockEl.innerHTML = '<div class="pex-loading">렌더링 중…</div>';
+  try {
+    const res = await fetch(PLANTUMLEX + '/render-with-layout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+      body: sources[idx],
+    });
+    if (!res.ok) throw new Error(await res.text());
+    blockEl.innerHTML = await res.text();
+  } catch (e) {
+    blockEl.innerHTML = `<div class="pex-loading" style="color:#b00">⚠ ${e.message}</div>`;
+  }
+}
+
+function startEditing(idx) {
+  // Stop any other in-progress edit (only one at a time)
+  for (const [otherIdx] of editing) if (otherIdx !== idx) stopEditing(otherIdx, /* commit */ true);
+
+  const block = document.querySelector(`.pex-block[data-source-id="${idx}"]`);
+  const renderEl = block.querySelector('.pex-render');
+  const editBtn = block.querySelector('.pex-edit-btn');
+  if (!renderEl.querySelector('svg')) { toast('아직 렌더링 중'); return; }
+
+  const parsed = PexMeta.parseSource(sources[idx]);
+  const initialLayout = parsed.meta && parsed.meta.layout ? parsed.meta.layout : { nodes: {}, edges: {} };
+  let layout = initialLayout;
+
+  const inline = PexInline.activate(renderEl, {
+    layout: initialLayout,
+    onLayoutChange: (l) => { layout = l; },
+  });
+  editing.set(idx, { inline, getLayout: () => layout });
+  block.classList.add('editing');
+  editBtn.textContent = '✓ 완료';
+  editBtn.onclick = () => stopEditing(idx, /* commit */ true);
+}
+
+function stopEditing(idx, commit) {
+  const sess = editing.get(idx);
+  if (!sess) return;
+  const layout = sess.getLayout();
+  sess.inline.deactivate();
+  editing.delete(idx);
+
+  const block = document.querySelector(`.pex-block[data-source-id="${idx}"]`);
+  const editBtn = block.querySelector('.pex-edit-btn');
+  block.classList.remove('editing');
+  editBtn.textContent = '✎ 편집';
+  editBtn.onclick = () => startEditing(idx);
+
+  if (commit) {
+    // Re-embed the canonical source-with-meta into sources[idx]
+    const cleanParsed = PexMeta.parseSource(sources[idx]);
+    const hasLayout = layout && (
+      Object.keys(layout.nodes || {}).length || Object.keys(layout.edges || {}).length
+    );
+    sources[idx] = hasLayout
+      ? PexMeta.embedMeta(cleanParsed.source, { schema: 1, layout })
+      : cleanParsed.source;
+    refreshRawMd();
+    // Re-render so the static (non-edit) view reflects the layout via server compositing
+    renderBlock(idx);
+    toast(`블록 ${idx + 1} 갱신`);
+  }
+}
+
+document.querySelectorAll('.pex-edit-btn').forEach((b) => {
+  b.onclick = () => startEditing(parseInt(b.dataset.idx, 10));
+});
+
+// Initial render
+refreshRawMd();
+sources.forEach((_, i) => renderBlock(i));
+</script>
+</body>
+</html>
