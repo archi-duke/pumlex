@@ -1,0 +1,14 @@
+{
+  "name": "plantumlex",
+  "version": "0.1.0",
+  "description": "PlantUML layout fine-tune editor (PoC)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0",
+    "express": "^4.19.2",
+    "plantuml-encoder": "^1.4.0"
+  }
+}
