@@ -196,24 +196,39 @@ function expandViewBox($, layout) {
   const vb = (svg.attr('viewBox') || '').split(/\s+/).map(Number);
   if (vb.length !== 4) return;
   const [x, y, w, h] = vb;
-  let minDx = 0, maxDx = 0, minDy = 0, maxDy = 0;
-  for (const d of Object.values(layout)) {
-    if (!d) continue;
-    minDx = Math.min(minDx, d.dx);
-    maxDx = Math.max(maxDx, d.dx);
-    minDy = Math.min(minDy, d.dy);
-    maxDy = Math.max(maxDy, d.dy);
-  }
-  const eL = Math.max(0, -minDx), eR = Math.max(0, maxDx);
-  const eT = Math.max(0, -minDy), eB = Math.max(0, maxDy);
-  const nx = x - eL, ny = y - eT, nw = w + eL + eR, nh = h + eT + eB;
-  svg.attr('viewBox', `${nx} ${ny} ${nw} ${nh}`);
+  // Compute the exact enclosing rect: original viewBox ∪ every moved
+  // entity's post-translate bbox. Earlier we grew by max|dx|/max|dy| which
+  // overshoots whenever the moved entity wasn't originally at the diagram
+  // edge — leaving visible empty padding after a layout edit.
+  let xMin = x, yMin = y, xMax = x + w, yMax = y + h;
+  $('g.entity').each((_, el) => {
+    const $el = $(el);
+    const q = $el.attr('data-qualified-name') || $el.attr('id');
+    if (!q) return;
+    const d = layout[q];
+    if (!d || (d.dx === 0 && d.dy === 0)) return;
+    const b = entityBBox($, $el);
+    if (!b) return;
+    const ex = b.x + d.dx, ey = b.y + d.dy;
+    if (ex < xMin) xMin = ex;
+    if (ey < yMin) yMin = ey;
+    if (ex + b.w > xMax) xMax = ex + b.w;
+    if (ey + b.h > yMax) yMax = ey + b.h;
+  });
+  const pad = 8;
+  xMin -= pad; yMin -= pad; xMax += pad; yMax += pad;
+  const nw = xMax - xMin, nh = yMax - yMin;
+  svg.attr('viewBox', `${xMin} ${yMin} ${nw} ${nh}`);
   svg.attr('width', `${nw}px`);
   svg.attr('height', `${nh}px`);
+  // Drop inline style width/height so host CSS can scale responsively.
   const style = (svg.attr('style') || '')
     .replace(/width\s*:[^;]+;?/g, '')
     .replace(/height\s*:[^;]+;?/g, '');
-  svg.attr('style', `width:${nw}px;height:${nh}px;${style}`);
+  if (style.trim()) svg.attr('style', style); else svg.removeAttr('style');
+  // Force uniform scaling so the diagram never squishes when CSS caps width.
+  const par = svg.attr('preserveAspectRatio');
+  if (!par || par === 'none') svg.attr('preserveAspectRatio', 'xMidYMid meet');
 }
 
 function cssEscape(s) {
