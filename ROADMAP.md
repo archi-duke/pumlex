@@ -9,7 +9,7 @@
 ## A. 안정성 / 견고성  ★★★
 
 - [x] **A-1** 첫 fetch 후 placeholder → SVG 자동 전환 — `markdown.preview.refresh` 우선, 실패 시 `markdown.api.reloadPlugins` fallback. 다중 호출 120ms debounce. `pumlex: Clear Cache` / `pumlex: Show Status` 진단 커맨드 추가.
-- [ ] **A-2** 서버 미가동 / 연결 실패 시 친절한 안내 (재시도, 서버 시작 가이드)
+- [x] **A-2** 서버 미가동 / 연결 실패 시 친절한 안내 — connection vs render 에러 구분, 서버 unreachable 시 시작 명령 안내 + `↻ 재시도` 버튼 (`vscode://archi-duke.pumlex/retry` URI handler가 error cache만 비우고 refresh)
 - [x] **A-3** 라이트백(commit) 후 미리보기 자동 refresh — cache 전체 clear 제거 (변경된 블록만 cache miss로 자연스럽게 재fetch). 다른 블록은 cache hit으로 깜빡임 없이 유지.
 
 ## B. 다른 extension과 공존  ★
@@ -47,3 +47,4 @@
 
 - 2026-04-29: 초기 ROADMAP 정리, 안정성 작업부터 시작.
 - 2026-04-29: **A-1 / A-3** 완료 — refresh fallback + debounce, commit 후 cache 미clear (변경 블록만 자연 재fetch). 진단 커맨드 추가.
+- 2026-04-29: **A-2** 완료 — connection error 분리 + 안내 + 재시도 URI 흐름. **A 카테고리 (안정성) 전체 완료**.

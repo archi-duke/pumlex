@@ -4,6 +4,7 @@ import { openEditorPanel } from './editorPanel';
 import {
   createMarkdownItPlugin,
   clearPumlexCache,
+  clearPumlexErrors,
   refreshActiveMarkdownPreview,
   getPumlexCacheSize,
   getPumlexInFlightCount,
@@ -155,6 +156,16 @@ export function activate(context: vscode.ExtensionContext) {
             return;
           }
           handleEditBlock(context, { blockIndex, source });
+          return;
+        }
+        if (uri.path === '/retry') {
+          const removed = clearPumlexErrors();
+          refreshActiveMarkdownPreview();
+          vscode.window.showInformationMessage(
+            removed > 0
+              ? `pumlex: ${removed}개의 오류 캐시 제거 → 재시도`
+              : 'pumlex: 재시도할 오류 항목 없음',
+          );
           return;
         }
         if (uri.path === '/commit') {

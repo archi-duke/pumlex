@@ -64,3 +64,42 @@
 .pumlex-block .pumlex-cancel-btn {
   right: 6px;
 }
+
+/* Connection-error block (server unreachable) — actionable error UI */
+.pumlex-block.pumlex-error-block {
+  border-color: var(--vscode-inputValidation-errorBorder, #fecaca);
+}
+.pumlex-conn-error {
+  padding: 16px;
+  background: var(--vscode-inputValidation-errorBackground, #fef2f2);
+  border-radius: 4px;
+  font: 13px -apple-system, system-ui, sans-serif;
+  color: var(--vscode-errorForeground, #b91c1c);
+}
+.pumlex-conn-title {
+  font-weight: bold;
+  margin-bottom: 8px;
+}
+.pumlex-conn-url, .pumlex-conn-hint {
+  margin: 8px 0;
+  font-size: 12px;
+}
+.pumlex-conn-hint code {
+  background: rgba(0,0,0,0.05);
+  padding: 1px 4px;
+  border-radius: 2px;
+  font: 11px ui-monospace, Menlo, monospace;
+}
+.pumlex-retry-btn {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 4px 14px;
+  font: 12px -apple-system, system-ui, sans-serif;
+  background: var(--vscode-button-background, #2563eb);
+  color: var(--vscode-button-foreground, #fff) !important;
+  border: 1px solid var(--vscode-button-background, #2563eb);
+  border-radius: 4px;
+  text-decoration: none !important;
+  cursor: pointer;
+}
+.pumlex-retry-btn:hover { filter: brightness(1.1); }

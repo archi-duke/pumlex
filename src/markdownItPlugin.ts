@@ -12,8 +12,13 @@ import * as vscode from 'vscode';
 //      when fetch completes, trigger a markdown preview reload so the
 //      next render swaps placeholder for SVG.
 
-const cache = new Map<string, string>();    // sourceHash → SVG (or error svg)
-const inFlight = new Set<string>();          // sourceHash currently being fetched
+type CacheEntry =
+  | { type: 'svg'; content: string; ts: number }
+  | { type: 'render-error'; content: string; ts: number }       // PlantUML syntax / source issue
+  | { type: 'connection-error'; content: string; ts: number };  // plantumlEx server unreachable
+
+const cache = new Map<string, CacheEntry>();
+const inFlight = new Set<string>();
 
 function hashSource(s: string): string {
   return crypto.createHash('sha256').update(s).digest('hex').slice(0, 16);
@@ -34,13 +39,43 @@ function placeholderSvg(): string {
     + `</svg>`;
 }
 
-function errorSvg(msg: string): string {
-  const safe = msg.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c] || c));
+function renderErrorSvg(msg: string): string {
+  const safe = escapeAttr(msg);
   return `<svg xmlns="http://www.w3.org/2000/svg" width="500" height="60" viewBox="0 0 500 60">`
     + `<rect width="500" height="60" fill="#fef2f2" stroke="#fecaca"/>`
     + `<text x="10" y="24" font-family="system-ui" font-size="13" fill="#b91c1c" font-weight="bold">⚠ pumlex 렌더링 오류</text>`
     + `<text x="10" y="44" font-family="ui-monospace,Menlo,monospace" font-size="11" fill="#7f1d1d">${safe.slice(0, 100)}</text>`
     + `</svg>`;
+}
+
+// HTML (not SVG) so we can include a real <a> retry button. Returned
+// in place of the diagram when plantumlEx server is unreachable.
+function connectionErrorHtml(serverUrl: string): string {
+  return `<div class="pumlex-conn-error">`
+    + `<div class="pumlex-conn-title">⚠ plantumlEx 서버에 연결할 수 없습니다</div>`
+    + `<div class="pumlex-conn-url"><code>${escapeAttr(serverUrl)}</code></div>`
+    + `<div class="pumlex-conn-hint">`
+    + `다음 명령으로 서버를 시작하세요:<br>`
+    + `<code>cd plantumlEx &amp;&amp; PORT=3030 PLANTUML_URL=http://localhost:8080 node server.js</code><br>`
+    + `(<code>pumlex.serverUrl</code> 설정으로 다른 주소를 가리킬 수 있음)`
+    + `</div>`
+    + `<a href="vscode://archi-duke.pumlex/retry" class="pumlex-retry-btn">↻ 재시도</a>`
+    + `</div>`;
+}
+
+function isConnectionError(e: any): boolean {
+  const msg = String(e?.message ?? e ?? '');
+  const code = e?.cause?.code ?? e?.code;
+  return (
+    code === 'ECONNREFUSED' ||
+    code === 'ECONNRESET' ||
+    code === 'ENOTFOUND' ||
+    code === 'ETIMEDOUT' ||
+    code === 'EHOSTUNREACH' ||
+    /fetch failed/i.test(msg) ||
+    /Failed to fetch/i.test(msg) ||
+    /ENETUNREACH/i.test(msg)
+  );
 }
 
 async function fetchSvg(serverUrl: string, source: string): Promise<string> {
@@ -63,17 +98,10 @@ export interface PluginOptions {
 }
 
 export function createMarkdownItPlugin(opts: PluginOptions) {
-  // Returns a function compatible with `extendMarkdownIt(md)` from VS Code's
-  // markdown extension contribution. Defensive throughout — if our rule
-  // throws or md is in an unexpected shape, we fall back to delegating to
-  // the original fence rule rather than letting the entire markdown engine
-  // crash ("An unexpected error occurred while restoring the Markdown
-  // preview" / Cannot read properties of undefined / etc.).
   return (md: any) => {
     if (!md || !md.renderer || !md.renderer.rules) return md;
     const origFence = md.renderer.rules.fence;
     const fallbackFence = (tokens: any, idx: number, _opt: any, _env: any, slf: any) => {
-      // Delegate to the existing rule when present, else minimal default.
       if (origFence) return origFence(tokens, idx, _opt, _env, slf);
       const token = tokens[idx];
       const lang = (token.info || '').trim();
@@ -101,16 +129,29 @@ export function createMarkdownItPlugin(opts: PluginOptions) {
           + ` data-block-index="${blockIndex}"`
           + ` data-block-source-encoded="${encodeURIComponent(source)}"`;
 
-        if (cache.has(hash)) {
-          const svg = cache.get(hash)!;
-          return `<div class="pumlex-block"${dataAttrs}>${svg}</div>`;
+        const entry = cache.get(hash);
+        if (entry) {
+          if (entry.type === 'svg') {
+            return `<div class="pumlex-block"${dataAttrs}>${entry.content}</div>`;
+          }
+          // error variants — keep dataAttrs so retry can identify the block
+          return `<div class="pumlex-block pumlex-error-block"${dataAttrs}>${entry.content}</div>`;
         }
 
         if (!inFlight.has(hash)) {
           inFlight.add(hash);
           fetchSvg(opts.serverUrl, source)
-            .then((svg) => { cache.set(hash, svg); })
-            .catch((e) => { cache.set(hash, errorSvg(e?.message || String(e))); })
+            .then((svg) => {
+              cache.set(hash, { type: 'svg', content: svg, ts: Date.now() });
+            })
+            .catch((e) => {
+              const conn = isConnectionError(e);
+              cache.set(hash, {
+                type: conn ? 'connection-error' : 'render-error',
+                content: conn ? connectionErrorHtml(opts.serverUrl) : renderErrorSvg(e?.message || String(e)),
+                ts: Date.now(),
+              });
+            })
             .finally(() => {
               inFlight.delete(hash);
               try { opts.onCacheUpdate(); } catch { /* ignore */ }
@@ -131,18 +172,19 @@ export function clearPumlexCache() {
   cache.clear();
 }
 
-/** Diagnostic: current cache size (number of unique source-hashes rendered). */
+/** Drop only error entries — used by the `/retry` URI handler so the next
+ * render re-fetches them. SVG entries are preserved (no flicker). */
+export function clearPumlexErrors() {
+  let n = 0;
+  for (const [k, v] of cache.entries()) {
+    if (v.type !== 'svg') { cache.delete(k); n++; }
+  }
+  return n;
+}
+
 export function getPumlexCacheSize() { return cache.size; }
-/** Diagnostic: number of in-flight (background) fetches. */
 export function getPumlexInFlightCount() { return inFlight.size; }
 
-/** Trigger preview reload after a cache update.
- *
- * Tries the lighter `markdown.preview.refresh` (refreshes the focused
- * preview) first, falling back to `markdown.api.reloadPlugins` (reloads
- * the entire markdown engine — heavier but always available). Multiple
- * back-to-back calls are coalesced to one refresh so a doc with many
- * plantuml blocks doesn't trigger one reload per finished fetch. */
 let refreshTimer: NodeJS.Timeout | null = null;
 let refreshAttempts = 0;
 export function refreshActiveMarkdownPreview() {
@@ -157,10 +199,9 @@ export function refreshActiveMarkdownPreview() {
     const ok = (await tryCmd('markdown.preview.refresh'))
       || (await tryCmd('markdown.api.reloadPlugins'));
     if (!ok) {
-      console.error('pumlex: no preview-refresh command worked. Diagrams may stay as placeholders until the user touches the file.');
+      console.error('pumlex: no preview-refresh command worked.');
     }
   }, 120);
 }
 
-/** Diagnostic for tests. */
 export function getRefreshAttemptCount() { return refreshAttempts; }
