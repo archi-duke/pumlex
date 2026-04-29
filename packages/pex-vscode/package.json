@@ -1,0 +1,81 @@
+{
+  "name": "pumlex",
+  "displayName": "pumlex",
+  "description": "Inline plantuml layout editing in VS Code Markdown preview, powered by plantumlEx",
+  "version": "0.0.2",
+  "publisher": "archi-duke",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/archi-duke/pumlex.git"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:markdown",
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "pumlex.hello",
+        "title": "pumlex: Hello"
+      },
+      {
+        "command": "pumlex.clearCache",
+        "title": "pumlex: Clear Cache (force re-render)"
+      },
+      {
+        "command": "pumlex.showStatus",
+        "title": "pumlex: Show Status"
+      },
+      {
+        "command": "pumlex.editBlock",
+        "title": "pumlex: Edit Block (internal)",
+        "enablement": "false"
+      }
+    ],
+    "markdown.previewScripts": [
+      "./lib/pex-geom.js",
+      "./lib/pex-meta.js",
+      "./lib/pex-inline.js",
+      "./media/preview.js"
+    ],
+    "markdown.previewStyles": [
+      "./media/preview.css"
+    ],
+    "markdown.markdownItPlugins": true,
+    "configuration": {
+      "title": "pumlex",
+      "properties": {
+        "pumlex.serverUrl": {
+          "type": "string",
+          "default": "http://localhost:3030",
+          "description": "plantumlEx server base URL (used for /render-with-layout)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "copy:core": "node ./scripts/copy-core.js",
+    "compile": "npm run copy:core && tsc -p ./",
+    "watch": "npm run copy:core && tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile",
+    "package": "vsce package --no-dependencies"
+  },
+  "dependencies": {
+    "@archi-duke/pex-core": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.80.0",
+    "@vscode/vsce": "^3.9.1",
+    "typescript": "^5.4.0"
+  }
+}

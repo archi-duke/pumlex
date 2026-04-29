@@ -4,8 +4,8 @@ const path = require('path');
 const crypto = require('crypto');
 const cheerio = require('cheerio');
 const plantumlEncoder = require('plantuml-encoder');
-const PexGeom = require('./public/pex-geom');
-const PexMeta = require('./public/pex-meta');
+const PexGeom = require('@archi-duke/pex-core/geom');
+const PexMeta = require('@archi-duke/pex-core/meta');
 
 const META_SCHEMA = 1;
 
@@ -15,6 +15,12 @@ app.use(express.json({ limit: '4mb' }));
 // markdown viewer can POST a code block verbatim without JSON wrapping.
 app.use(express.text({ type: 'text/plain', limit: '4mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+// Serve @archi-duke/pex-core as static assets so edit.html / demo-host.html
+// can <script src="/pex-core/{geom,meta,inline}.js"> the same modules the
+// server itself requires. Resolves the canonical pex-core dir even via the
+// workspace symlink (npm workspaces flat-installs at the repo root).
+const pexCoreDir = path.dirname(require.resolve('@archi-duke/pex-core/package.json'));
+app.use('/pex-core', express.static(pexCoreDir));
 
 // Open CORS so embeds from a different origin (GoJIRA-App at :3000, a markdown
 // viewer page, etc.) can hit the render endpoints. The data we serve is just

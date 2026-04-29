@@ -2,7 +2,8 @@
 
 기능 + 안정성 작업 목록. 항목이 끝날 때마다 체크박스 갱신.
 
-상관 레포: [archi-duke/plantumlEx](https://github.com/archi-duke/plantumlEx) (서버·`pex-inline.js` 본체).
+> 이 레포는 **모노레포**다. `packages/pex-core` (공용), `packages/pex-server` (Express 서버), `packages/pex-vscode` (확장).
+> 과거의 `archi-duke/plantumlEx` 레포는 `packages/pex-server` 로 흡수되었다 (히스토리 보존 — `git subtree`).
 
 ---
 
@@ -49,3 +50,4 @@
 - 2026-04-29: **A-1 / A-3** 완료 — refresh fallback + debounce, commit 후 cache 미clear (변경 블록만 자연 재fetch). 진단 커맨드 추가.
 - 2026-04-29: **A-2** 완료 — connection error 분리 + 안내 + 재시도 URI 흐름. **A 카테고리 (안정성) 전체 완료**.
 - 2026-04-29: **C-1** 완료 — vsce 통한 .vsix 빌드. 사내 배포 / `code --install-extension` 설치 가능.
+- 2026-04-29: **모노레포 마이그레이션 완료** — `archi-duke/plantumlEx` 를 `packages/pex-server` 로 subtree merge (히스토리 보존), `pex-core` 추출, npm workspaces 구성. 단일 origin: archi-duke/pumlex.

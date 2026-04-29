@@ -1,14 +1,17 @@
 {
-  "name": "plantumlex",
+  "name": "@archi-duke/pex-server",
   "version": "0.1.0",
-  "description": "PlantUML layout fine-tune editor (PoC)",
+  "description": "PlantUML layout fine-tune editor server (Express + cheerio + plantuml-encoder). Renders SVGs and applies pex-core layout deltas.",
+  "license": "MIT",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
+    "@archi-duke/pex-core": "*",
     "cheerio": "^1.0.0",
     "express": "^4.19.2",
     "plantuml-encoder": "^1.4.0"
-  }
+  },
+  "private": true
 }
