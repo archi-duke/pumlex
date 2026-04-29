@@ -22,11 +22,32 @@
     return 'vscode://archi-duke.pumlex' + path + '?' + qs;
   }
 
+  // PlantUML emits `preserveAspectRatio="none"` for some diagram types
+  // (use-case / description), which combined with `max-width:100%` from
+  // markdown preview CSS squishes the diagram horizontally when the pane
+  // is narrower than the SVG's natural width. Fix once per SVG by forcing
+  // uniform scaling and stripping any inline width/height that overrides
+  // CSS height:auto.
+  function normalizeSvg(svg) {
+    if (!svg) return;
+    const par = svg.getAttribute('preserveAspectRatio');
+    if (!par || par === 'none') {
+      svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    }
+    const style = (svg.getAttribute('style') || '')
+      .replace(/width\s*:[^;]+;?/g, '')
+      .replace(/height\s*:[^;]+;?/g, '');
+    if (style.trim()) svg.setAttribute('style', style);
+    else svg.removeAttribute('style');
+  }
+
   // Decorate a `.pumlex-block` so the user can hover-trigger inline editing.
   function decorateBlock(blockEl) {
     if (blockEl.dataset.pumlexDecorated) return;
     if (blockEl.classList.contains('pumlex-loading')) return;
-    if (!blockEl.querySelector('svg')) return;
+    const svg = blockEl.querySelector('svg');
+    if (!svg) return;
+    normalizeSvg(svg);
     blockEl.dataset.pumlexDecorated = '1';
 
     const blockIndex = parseInt(blockEl.dataset.blockIndex || '0', 10);
