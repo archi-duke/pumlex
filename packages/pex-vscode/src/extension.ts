@@ -89,25 +89,33 @@ export function activate(context: vscode.ExtensionContext) {
 
   const readServerUrl = () =>
     vscode.workspace.getConfiguration('pumlex').get<string>('serverUrl') || 'http://localhost:3030';
+  const readFenceMatching = (): 'all' | 'marker' => {
+    const v = vscode.workspace.getConfiguration('pumlex').get<string>('fenceMatching');
+    return v === 'marker' ? 'marker' : 'all';
+  };
 
   // Hold a stable reference so the config-change handler can mutate
-  // serverUrl in place — the markdown-it plugin reads opts.serverUrl on
-  // every fetch, so updating the property here is enough for subsequent
-  // renders to hit the new URL.
+  // properties in place — the markdown-it plugin reads opts.serverUrl /
+  // opts.fenceMatching on every render, so updating these is enough for
+  // subsequent renders to pick up the new values.
   const pluginOpts = {
     serverUrl: readServerUrl(),
+    fenceMatching: readFenceMatching(),
     onCacheUpdate: () => refreshActiveMarkdownPreview(),
   };
 
-  // Configuration changes invalidate the cache (server URL may have changed
-  // → previously fetched SVGs are stale).
+  // Configuration changes invalidate the cache:
+  //   - serverUrl change → previously fetched SVGs may be stale
+  //   - fenceMatching change → which fences pumlex claims may have shifted
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('pumlex.serverUrl')) {
-        pluginOpts.serverUrl = readServerUrl();
-        clearPumlexCache();
-        refreshActiveMarkdownPreview();
-      }
+      const urlChanged = e.affectsConfiguration('pumlex.serverUrl');
+      const matchChanged = e.affectsConfiguration('pumlex.fenceMatching');
+      if (!urlChanged && !matchChanged) return;
+      if (urlChanged) pluginOpts.serverUrl = readServerUrl();
+      if (matchChanged) pluginOpts.fenceMatching = readFenceMatching();
+      clearPumlexCache();
+      refreshActiveMarkdownPreview();
     }),
   );
 
@@ -133,6 +141,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('pumlex.showStatus', async () => {
       const cfg = vscode.workspace.getConfiguration('pumlex');
       const url = cfg.get<string>('serverUrl') || '(unset)';
+      const mode = cfg.get<string>('fenceMatching') || 'all';
       let serverStatus = '?';
       try {
         const r = await fetch(url + '/');
@@ -141,6 +150,7 @@ export function activate(context: vscode.ExtensionContext) {
       const lines = [
         `serverUrl: ${url}`,
         `server reachable: ${serverStatus}`,
+        `fenceMatching: ${mode}`,
         `cache entries: ${getPumlexCacheSize()}`,
         `in-flight fetches: ${getPumlexInFlightCount()}`,
         `refresh attempts: ${getRefreshAttemptCount()}`,

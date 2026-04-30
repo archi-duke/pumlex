@@ -58,6 +58,16 @@
           "type": "string",
           "default": "http://localhost:3030",
           "description": "plantumlEx server base URL (used for /render-with-layout)."
+        },
+        "pumlex.fenceMatching": {
+          "type": "string",
+          "enum": ["all", "marker"],
+          "default": "all",
+          "enumDescriptions": [
+            "Handle every ```plantuml / ```puml fence (default).",
+            "Coexist with other plantuml extensions (e.g. jebbs.plantuml). Only handle fences whose info string includes the `pumlex` token (```plantuml pumlex) OR whose body already contains a `' @startmeta` block from a prior pumlex edit. Other fences fall through to whichever extension was registered before pumlex."
+          ],
+          "description": "Strategy for picking which markdown plantuml fences pumlex renders."
         }
       }
     }

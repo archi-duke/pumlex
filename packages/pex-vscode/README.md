@@ -69,6 +69,25 @@ api --> db
 | 키 | 기본값 | 설명 |
 |---|---|---|
 | `pumlex.serverUrl` | `http://localhost:3030` | plantumlEx 서버 base URL. 변경 시 캐시 자동 무효화 + 미리보기 새로고침. |
+| `pumlex.fenceMatching` | `"all"` | pumlex 가 어떤 fence 를 가져갈지 결정. `"all"` = 모든 ` ```plantuml ` / ` ```puml `. `"marker"` = 다른 plantuml 확장과 공존 시 사용 (아래 참고). |
+
+### `jebbs.plantuml` 등 다른 plantuml 확장과 공존
+
+기본 `"all"` 모드에서는 pumlex 가 모든 plantuml fence 를 가져가므로 다른 markdown-it 기반 plantuml 확장과 충돌할 수 있다. `pumlex.fenceMatching` 을 `"marker"` 로 바꾸면 pumlex 는 다음 두 시그널 중 하나를 만족하는 fence 만 처리한다:
+
+1. **명시적 마커** — info 문자열에 `pumlex` 토큰 포함
+   ````markdown
+   ```plantuml pumlex
+   @startuml
+   ...
+   @enduml
+   ```
+   ````
+   첫 토큰이 여전히 `plantuml` 이라 다른 확장의 syntax highlighting / 처리는 그대로.
+
+2. **메타 sticky** — 소스 본문에 이미 `' @startmeta` 블록이 있는 경우. pumlex 가 이전에 한 번이라도 편집한 fence 는 마커 없이도 자동 인식 — 모드 전환 후에도 기존 작업물이 끊기지 않게 함.
+
+마커도 메타도 없는 fence 는 다른 확장(또는 markdown-it 기본 코드 블록 렌더러)으로 떨어진다.
 
 ## CSP / 웹뷰 권한 — 별도 설정 불필요
 
@@ -95,7 +114,6 @@ api --> db
 ## 알려진 제약
 
 - **시퀀스 / 활동 다이어그램 인라인 편집 미지원** (ROADMAP **E-4**). 컴포넌트 / 상태 / 유스케이스 / 클래스 다이어그램은 지원.
-- **`jebbs.plantuml` 동시 활성화** 시 fence 처리가 충돌할 수 있음 (ROADMAP **B-1**).
 - **Markdown Preview Enhanced (MPE)** 와는 호환되지 않음 — MPE 는 자체 webview 사용 (ROADMAP **B-2**).
 
 ## 라이선스

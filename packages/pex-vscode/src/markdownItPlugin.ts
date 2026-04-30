@@ -91,10 +91,28 @@ async function fetchSvg(serverUrl: string, source: string): Promise<string> {
   return await res.text();
 }
 
+export type FenceMatching = 'all' | 'marker';
+
 export interface PluginOptions {
   serverUrl: string;
+  /** Strategy for which ```plantuml fences this plugin claims. */
+  fenceMatching: FenceMatching;
   /** Called whenever the cache gains a new entry — host should reload preview. */
   onCacheUpdate: () => void;
+}
+
+// Source already has a meta block that pumlex previously embedded — treat
+// the fence as pumlex-owned regardless of fence-matching mode. Mirrors the
+// presence check in pex-core/meta.js (extractMeta uses indexOf on this same
+// literal). Robust to leading whitespace because the string is the meta
+// block's own opening line.
+function sourceHasPumlexMeta(source: string): boolean {
+  return source.indexOf("' @startmeta") !== -1;
+}
+
+// Tokenize a fence info string. ` ```plantuml pumlex foo ` → ['plantuml','pumlex','foo'].
+function tokenizeInfo(info: string): string[] {
+  return info.trim().toLowerCase().split(/\s+/).filter(Boolean);
 }
 
 export function createMarkdownItPlugin(opts: PluginOptions) {
@@ -113,11 +131,28 @@ export function createMarkdownItPlugin(opts: PluginOptions) {
       try {
         const token = tokens[idx];
         if (!token || typeof token.info !== 'string') return fallbackFence(tokens, idx, options, env, slf);
-        const lang = token.info.trim().toLowerCase();
+        // Inspect only the first whitespace-separated token for the language;
+        // ` ```plantuml pumlex ` should still match `plantuml`. Earlier the rule
+        // compared the whole info string and silently rejected anything past
+        // the first word.
+        const infoTokens = tokenizeInfo(token.info);
+        const lang = infoTokens[0] || '';
         if (lang !== 'plantuml' && lang !== 'puml') {
           return fallbackFence(tokens, idx, options, env, slf);
         }
         const source = token.content;
+
+        // Coexistence gate: in 'marker' mode require an explicit signal that
+        // this fence is pumlex's. Two signals, OR-combined:
+        //   1. info string contains the `pumlex` token   (user opt-in)
+        //   2. source already has a `' @startmeta` block (sticky after first
+        //      pumlex edit — keeps already-edited fences working even after
+        //      the user switches to marker mode for jebbs.plantuml coexistence)
+        if (opts.fenceMatching === 'marker') {
+          const markerOptIn = infoTokens.includes('pumlex') || sourceHasPumlexMeta(source);
+          if (!markerOptIn) return fallbackFence(tokens, idx, options, env, slf);
+        }
+
         const hash = hashSource(source);
 
         env = env || {};

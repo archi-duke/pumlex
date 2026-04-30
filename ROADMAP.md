@@ -15,7 +15,7 @@
 
 ## B. 다른 extension과 공존  ★
 
-- [ ] **B-1** `jebbs.plantuml` 동시 활성화 시 fence 마커로 분리 (예: 메타 유무 기반 또는 `plantuml-pumlex` 마커)
+- [x] **B-1** `jebbs.plantuml` 동시 활성화 — `pumlex.fenceMatching` 설정 추가 (`"all"` 기본 / `"marker"` 옵트인). marker 모드에서는 info 에 `pumlex` 토큰 또는 본문에 `' @startmeta` (이전 편집 sticky) 가 있을 때만 pumlex 가 가져감. 기본값 유지로 기존 사용자 영향 없음.
 - [ ] **B-2** Markdown Preview Enhanced (MPE) 통합 (MPE는 자체 webview 사용)
 
 ## C. 배포 / 패키징  ★★★
@@ -57,3 +57,4 @@
 - 2026-04-30: **F-1 / F-2** 완료 — architecture.md 모노레포 기준 재작성, GitHub Pages 데모 (`docs/` + `scripts/build-demo.js`) 스테이징.
 - 2026-04-30: **C-2** 완료 — `packages/pex-vscode/README.md` 사용자 가이드 신규, 루트 README 에 가이드 / 데모 / 아키텍처 / 로드맵 링크.
 - 2026-04-30: **C-3** 완료 — serverUrl 캡처 버그 수정. `extension.ts` 의 `pluginOpts` 객체 reference 를 유지하고 config 변경 시 in-place 로 갱신.
+- 2026-04-30: **B-1** 완료 — `pumlex.fenceMatching` 설정 + marker 모드 (info 토큰 OR 메타 sticky). info 토크나이즈로 첫 단어만 lang 판정 → ` ```plantuml pumlex ` 같은 fence 도 lang 매치. fence rule 부수적으로 case-insensitive 동작 검증.
