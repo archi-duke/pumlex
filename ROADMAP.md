@@ -21,7 +21,7 @@
 ## C. 배포 / 패키징  ★★★
 
 - [x] **C-1** `vsce package` → `.vsix` 빌드 — `npm run package`로 `pumlex-0.0.1.vsix` 생성. `code --install-extension <vsix>` 로 설치 가능. LICENSE / .vscodeignore 추가.
-- [ ] **C-2** README 사용자 가이드 (plantumlEx 서버 실행, CSP 설정, 첫 실행 흐름)
+- [x] **C-2** README 사용자 가이드 — `packages/pex-vscode/README.md` 신규 작성 (첫 실행 흐름, 명령, 설정, CSP 메모, 트러블슈팅, 알려진 제약). 루트 README 에서 링크 + docs / architecture / ROADMAP 안내 섹션 추가.
 - [ ] **C-3** `pumlex.serverUrl` 설정 변경 시 캐시 무효화 동작 검증
 
 ## D. UX 다듬기  ★
@@ -39,8 +39,8 @@
 
 ## F. 문서
 
-- [ ] **F-1** 두 레포의 `docs/architecture.md` 현재 상태 반영
-- [ ] **F-2** plantumlEx의 `demo-host.html` GitHub Pages 게시 (체험용)
+- [x] **F-1** `docs/architecture.md` 현재 상태 반영 — 모노레포 구조, 소스 내장 메타 (`' @startmeta`), `PexInline.activate` 인라인 편집, `/render-with-layout` 단일 엔드포인트, VS Code 확장 + demo-host 클라이언트 모델로 재작성.
+- [x] **F-2** `demo-host.html` GitHub Pages 게시 — `docs/` 스테이징 + `scripts/build-demo.js` 로 idempotent 재생성 (`npm run build:demo`). 런타임 서버 URL resolver (`?server=` → localStorage → localhost:3030) + setup 배너.
 
 ---
 
@@ -54,3 +54,5 @@
 - 2026-04-29: **C-1** 완료 — vsce 통한 .vsix 빌드. 사내 배포 / `code --install-extension` 설치 가능.
 - 2026-04-29: **모노레포 마이그레이션 완료** — `archi-duke/plantumlEx` 를 `packages/pex-server` 로 subtree merge (히스토리 보존), `pex-core` 추출, npm workspaces 구성. 단일 origin: archi-duke/pumlex.
 - 2026-04-30: 샘플 정리 — 시퀀스/활동 다이어그램은 현재 `g.entity` 가 없어 편집 불가, 컴포넌트/상태 다이어그램으로 교체. 한계는 **E-4** 로 후속 추적.
+- 2026-04-30: **F-1 / F-2** 완료 — architecture.md 모노레포 기준 재작성, GitHub Pages 데모 (`docs/` + `scripts/build-demo.js`) 스테이징.
+- 2026-04-30: **C-2** 완료 — `packages/pex-vscode/README.md` 사용자 가이드 신규, 루트 README 에 가이드 / 데모 / 아키텍처 / 로드맵 링크.

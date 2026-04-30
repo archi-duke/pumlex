@@ -21,7 +21,7 @@ npm run start:server   # 기본 :3030, PORT=xxxx 로 변경 가능
 
 # (3-a) 웹 데모 — http://localhost:3030/demo-host.html
 
-# (3-b) VS Code 확장 빌드 + .vsix
+# (3-b) VS Code 확장 빌드 + .vsix  ← 첫 사용자라면 packages/pex-vscode/README.md 참고
 npm run build:vscode      # tsc + pex-core 복사
 npm run package:vscode    # .vsix 생성
 code --install-extension packages/pex-vscode/pumlex-*.vsix
@@ -33,6 +33,13 @@ npm run build:demo        # docs/ 재빌드
 ```
 
 확장 개발 시: `code packages/pex-vscode` → F5.
+
+## 사용자 가이드 / 추가 문서
+
+- **확장 사용 가이드**: [`packages/pex-vscode/README.md`](./packages/pex-vscode/README.md) — 첫 실행 흐름, 명령, 설정, CSP, 트러블슈팅
+- **데모 페이지 셋업**: [`docs/README.md`](./docs/README.md) — GitHub Pages 호스팅 / 재빌드
+- **아키텍처**: [`packages/pex-server/docs/architecture.md`](./packages/pex-server/docs/architecture.md) — 모노레포 데이터 흐름, 메타 임베드, 렌더 파이프라인
+- **로드맵**: [`ROADMAP.md`](./ROADMAP.md)
 
 ## 구조 메모
 

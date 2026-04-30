@@ -1,0 +1,103 @@
+# pumlex (VS Code extension)
+
+Markdown 미리보기 안에서 ` ```plantuml ` 블록을 SVG 로 렌더하고, **그 SVG 위에서 노드를 직접 드래그해 레이아웃을 미세조정**할 수 있는 확장이다. 조정한 위치는 PlantUML 소스 끝의 `' @startmeta` 주석 블록에 임베드돼 한 파일로 보존된다.
+
+> `archi-duke/pumlex` 모노레포의 일부 (`packages/pex-vscode`).
+> 전체 구조는 [루트 README](../../README.md) / [architecture.md](../pex-server/docs/architecture.md) 참고.
+
+## 요구사항
+
+- **VS Code** 1.80+
+- **plantumlEx 서버** (`packages/pex-server`) — 로컬 실행, 기본 `http://localhost:3030`
+- **Java** — PlantUML jar 호출용 (서버 측 요구사항)
+
+## 설치
+
+```bash
+# 모노레포 루트에서
+npm install
+npm run package:vscode                        # → packages/pex-vscode/pumlex-x.y.z.vsix
+code --install-extension packages/pex-vscode/pumlex-*.vsix
+```
+
+개발 모드: `code packages/pex-vscode` → F5 (Extension Development Host).
+
+## 첫 실행 흐름
+
+**1) plantumlEx 서버 실행** — 별도 터미널에서:
+
+```bash
+npm run start:server          # 모노레포 루트, 기본 :3030
+# PORT=4000 npm run start:server      # 포트 변경
+```
+
+**2) 확장 설정 확인** — `pumlex.serverUrl` 이 위 주소와 일치하는지 (기본값 그대로 두면 됨).
+
+**3) 마크다운에 fence 작성**:
+
+````markdown
+```plantuml
+@startuml
+component "Web" as web
+component "API" as api
+database "DB" as db
+web --> api
+api --> db
+@enduml
+```
+````
+
+**4) 미리보기 열기** — `Cmd+K V` (macOS) / `Ctrl+K V`. 처음에는 placeholder 가 잠깐 떴다가 SVG 로 자동 교체된다.
+
+**5) 인라인 편집** — SVG 위에 마우스를 올리면 ✎ 버튼이 뜬다.
+- 클릭 → 노드 드래그 / 멀티 셀렉트(Shift+클릭) / 그룹 이동 / 엣지 곡선 핸들
+- ✓ 클릭 → 변경된 좌표가 PlantUML 소스의 `' @startmeta` 블록에 기록 (확장이 텍스트 에디터에 `WorkspaceEdit` 적용)
+- `Cmd+S` 로 저장
+
+## 명령
+
+| 명령 | 용도 |
+|---|---|
+| `pumlex: Hello` | 활성화 확인 + 현재 `serverUrl` 표시 |
+| `pumlex: Show Status` | 서버 reachability, 캐시 크기, in-flight fetch 수, refresh 시도 횟수 |
+| `pumlex: Clear Cache (force re-render)` | 메모리 캐시 비우고 모든 블록 재렌더 |
+
+미리보기 안의 "↻ 재시도" 버튼은 `vscode://archi-duke.pumlex/retry` URI 핸들러로 라우팅 — 오류 캐시만 제거해 SVG 캐시는 깜빡임 없이 유지된다.
+
+## 설정
+
+| 키 | 기본값 | 설명 |
+|---|---|---|
+| `pumlex.serverUrl` | `http://localhost:3030` | plantumlEx 서버 base URL. 변경 시 캐시 자동 무효화 + 미리보기 새로고침. |
+
+## CSP / 웹뷰 권한 — 별도 설정 불필요
+
+확장은 **extension host 측에서** `pumlex.serverUrl` 을 호출하고 SVG 를 markdown 페이지에 inline 시킨다. 결과적으로:
+
+- markdown preview webview 자체는 외부 네트워크 접근이 없어도 동작 (`connect-src` 사용 안 함)
+- 인라인 편집의 edit / commit / retry 액션은 webview 안에서 클릭 가능한 `vscode://archi-duke.pumlex/...` 링크로 처리되며, VS Code 의 standard URI handler 가 라우팅
+- 별도로 띄우는 에디터 패널(`editorPanel.ts`)은 자체 CSP 에 plantumlEx 서버 origin 을 허용 — 사용자가 건드릴 필요 없음
+
+`pumlex.serverUrl` 을 원격 호스트(예: 사내 서버) 로 바꿔도 markdown preview CSP 영향은 없다.
+
+## 트러블슈팅
+
+| 증상 | 원인 / 해결 |
+|---|---|
+| placeholder 가 사라지지 않음 | 서버 미가동. 미리보기 안 안내 + "↻ 재시도" 버튼 사용. `npm run start:server` 로 기동. |
+| "render error" 표시 | PlantUML 소스 자체 오류. 에디터로 돌아가 라인 메시지 확인. |
+| `serverUrl` 변경 후 옛 SVG 가 잠깐 보임 | 활성 미리보기는 자동 무효화되지만 다른 `.md` 의 미리보기는 재오픈 필요할 수 있다. `pumlex: Clear Cache` 실행. |
+| ✓ 클릭 후 소스 갱신 안 됨 | 해당 markdown 파일이 열려 있어야 함 (확장이 `workspace.textDocuments` 에서 매칭). 닫혀 있으면 "블록 #N 을 찾지 못했습니다" 안내. |
+| `' @startmeta` 가 자동 추가 안 됨 | 메타 없는 블록의 첫 편집 시 동작 검증은 ROADMAP **D-2** 진행 중. 수동으로 한번 ✓ 누르면 추가된다. |
+
+진단이 더 필요하면 `pumlex: Show Status` 실행. 서버 reachability 와 캐시 통계가 한눈에 표시된다.
+
+## 알려진 제약
+
+- **시퀀스 / 활동 다이어그램 인라인 편집 미지원** (ROADMAP **E-4**). 컴포넌트 / 상태 / 유스케이스 / 클래스 다이어그램은 지원.
+- **`jebbs.plantuml` 동시 활성화** 시 fence 처리가 충돌할 수 있음 (ROADMAP **B-1**).
+- **Markdown Preview Enhanced (MPE)** 와는 호환되지 않음 — MPE 는 자체 webview 사용 (ROADMAP **B-2**).
+
+## 라이선스
+
+MIT — [LICENSE](../../LICENSE)
