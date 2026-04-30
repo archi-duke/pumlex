@@ -193,8 +193,109 @@ function applyLayout(svg, rawLayout) {
       $t.attr('y', String(newStart.y + tp * ndy + rotY));
     });
   });
+  resizeContainers($, nodes);
   expandViewBox($, nodes);
   return $.xml();
+}
+
+// Mirrors pex-core/inline.js resizeContainers: PlantUML draws clusters
+// (rectangle/package/node) at a fixed size; once a child entity is
+// translated by a layout delta the cluster no longer follows. Walk all
+// clusters deepest-first and rewrite each cluster's <rect> (and label
+// position) to span the union of its direct children's translated bboxes
+// plus PlantUML's original padding (snapshotted from the natural layout
+// before any delta is applied).
+function resizeContainers($, nodes) {
+  const clusters = $('g.cluster').toArray();
+  if (!clusters.length) return;
+  // Deepest-first so a nested cluster's new bbox is in place before its
+  // parent reads it.
+  clusters.sort((a, b) => {
+    const ad = ($(a).attr('data-qualified-name') || '').split('.').length;
+    const bd = ($(b).attr('data-qualified-name') || '').split('.').length;
+    return bd - ad;
+  });
+  for (const c of clusters) resizeOneCluster($, $(c), nodes);
+}
+
+function resizeOneCluster($, $cluster, nodes) {
+  const cqname = $cluster.attr('data-qualified-name');
+  if (!cqname) return;
+  const prefix = cqname + '.';
+  // Direct children = entity OR cluster whose qname is `prefix + <leaf>`
+  // (no extra dots in the rest).
+  const $children = $('g.entity, g.cluster').filter((_, el) => {
+    const $el = $(el);
+    if ($el.is($cluster)) return false;
+    const q = $el.attr('data-qualified-name');
+    if (!q || !q.startsWith(prefix)) return false;
+    const rest = q.slice(prefix.length);
+    return rest.length > 0 && !rest.includes('.');
+  });
+  if (!$children.length) return;
+
+  const $rect = $cluster.find('rect').first();
+  const $text = $cluster.find('text').first();
+  if (!$rect.length) return;
+
+  // Original cluster geometry (PlantUML's natural layout).
+  const ox = parseFloat($rect.attr('x'));
+  const oy = parseFloat($rect.attr('y'));
+  const ow = parseFloat($rect.attr('width'));
+  const oh = parseFloat($rect.attr('height'));
+  if ([ox, oy, ow, oh].some(Number.isNaN)) return;
+  const otOffsetY = $text.length ? (parseFloat($text.attr('y')) - oy) : 0;
+
+  // Original (no-delta) children bbox — for snapshotting padding.
+  let omnX = Infinity, omnY = Infinity, omxX = -Infinity, omxY = -Infinity;
+  $children.each((_, el) => {
+    const b = entityBBox($, $(el));
+    if (!b) return;
+    if (b.x < omnX) omnX = b.x;
+    if (b.y < omnY) omnY = b.y;
+    if (b.x + b.w > omxX) omxX = b.x + b.w;
+    if (b.y + b.h > omxY) omxY = b.y + b.h;
+  });
+  if (!isFinite(omnX)) return;
+  const padLeft   = omnX - ox;
+  const padRight  = (ox + ow) - omxX;
+  const padTop    = omnY - oy;
+  const padBottom = (oy + oh) - omxY;
+
+  // Translated children bbox (deltas applied for entities; nested clusters
+  // already have their rect mutated by a previous deepest-first pass).
+  let mnX = Infinity, mnY = Infinity, mxX = -Infinity, mxY = -Infinity;
+  $children.each((_, el) => {
+    const $el = $(el);
+    const b = entityBBox($, $el);
+    if (!b) return;
+    let dx = 0, dy = 0;
+    if ($el.hasClass('entity')) {
+      const q = $el.attr('data-qualified-name') || $el.attr('id');
+      const d = q ? nodes[q] : null;
+      if (d) { dx = d.dx || 0; dy = d.dy || 0; }
+    }
+    const x = b.x + dx, y = b.y + dy;
+    if (x < mnX) mnX = x;
+    if (y < mnY) mnY = y;
+    if (x + b.w > mxX) mxX = x + b.w;
+    if (y + b.h > mxY) mxY = y + b.h;
+  });
+  if (!isFinite(mnX)) return;
+
+  const newX = mnX - padLeft;
+  const newY = mnY - padTop;
+  const newW = (mxX - mnX) + padLeft + padRight;
+  const newH = (mxY - mnY) + padTop + padBottom;
+  $rect.attr('x', String(newX));
+  $rect.attr('y', String(newY));
+  $rect.attr('width', String(newW));
+  $rect.attr('height', String(newH));
+  if ($text.length) {
+    const tl = parseFloat($text.attr('textLength'));
+    if (isFinite(tl)) $text.attr('x', String(newX + (newW - tl) / 2));
+    $text.attr('y', String(newY + otOffsetY));
+  }
 }
 
 function expandViewBox($, layout) {
@@ -220,6 +321,22 @@ function expandViewBox($, layout) {
     if (ey < yMin) yMin = ey;
     if (ex + b.w > xMax) xMax = ex + b.w;
     if (ey + b.h > yMax) yMax = ey + b.h;
+  });
+  // Clusters were just resized in-place by resizeContainers — include their
+  // post-resize rect so the viewBox grows to fit a cluster that expanded
+  // around moved children.
+  $('g.cluster').each((_, el) => {
+    const $rect = $(el).find('rect').first();
+    if (!$rect.length) return;
+    const cx = parseFloat($rect.attr('x'));
+    const cy = parseFloat($rect.attr('y'));
+    const cw = parseFloat($rect.attr('width'));
+    const ch = parseFloat($rect.attr('height'));
+    if ([cx, cy, cw, ch].some(Number.isNaN)) return;
+    if (cx < xMin) xMin = cx;
+    if (cy < yMin) yMin = cy;
+    if (cx + cw > xMax) xMax = cx + cw;
+    if (cy + ch > yMax) yMax = cy + ch;
   });
   const pad = 8;
   xMin -= pad; yMin -= pad; xMax += pad; yMax += pad;
