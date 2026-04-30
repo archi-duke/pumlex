@@ -87,14 +87,24 @@ async function handleEditBlock(context: vscode.ExtensionContext, args: EditBlock
 export function activate(context: vscode.ExtensionContext) {
   console.log('pumlex: activated');
 
-  const cfg = vscode.workspace.getConfiguration('pumlex');
-  const serverUrl = cfg.get<string>('serverUrl') || 'http://localhost:3030';
+  const readServerUrl = () =>
+    vscode.workspace.getConfiguration('pumlex').get<string>('serverUrl') || 'http://localhost:3030';
+
+  // Hold a stable reference so the config-change handler can mutate
+  // serverUrl in place — the markdown-it plugin reads opts.serverUrl on
+  // every fetch, so updating the property here is enough for subsequent
+  // renders to hit the new URL.
+  const pluginOpts = {
+    serverUrl: readServerUrl(),
+    onCacheUpdate: () => refreshActiveMarkdownPreview(),
+  };
 
   // Configuration changes invalidate the cache (server URL may have changed
   // → previously fetched SVGs are stale).
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('pumlex.serverUrl')) {
+        pluginOpts.serverUrl = readServerUrl();
         clearPumlexCache();
         refreshActiveMarkdownPreview();
       }
@@ -104,10 +114,7 @@ export function activate(context: vscode.ExtensionContext) {
   // Build the markdown-it plugin once. The same instance is returned on each
   // `extendMarkdownIt` call from VS Code (which happens whenever a markdown
   // document needs to be rendered).
-  const mdPlugin = createMarkdownItPlugin({
-    serverUrl,
-    onCacheUpdate: () => refreshActiveMarkdownPreview(),
-  });
+  const mdPlugin = createMarkdownItPlugin(pluginOpts);
 
   context.subscriptions.push(
     vscode.commands.registerCommand('pumlex.hello', () => {

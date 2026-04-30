@@ -22,7 +22,7 @@
 
 - [x] **C-1** `vsce package` → `.vsix` 빌드 — `npm run package`로 `pumlex-0.0.1.vsix` 생성. `code --install-extension <vsix>` 로 설치 가능. LICENSE / .vscodeignore 추가.
 - [x] **C-2** README 사용자 가이드 — `packages/pex-vscode/README.md` 신규 작성 (첫 실행 흐름, 명령, 설정, CSP 메모, 트러블슈팅, 알려진 제약). 루트 README 에서 링크 + docs / architecture / ROADMAP 안내 섹션 추가.
-- [ ] **C-3** `pumlex.serverUrl` 설정 변경 시 캐시 무효화 동작 검증
+- [x] **C-3** `pumlex.serverUrl` 설정 변경 동작 검증 — 캐시 clear / preview refresh 는 정상이지만 **markdown-it 플러그인이 활성화 시점의 serverUrl 을 closure 로 캡처**해 변경 후에도 옛 URL 로 fetch 가 나가는 버그 발견. `extension.ts` 가 `pluginOpts` 객체 reference 를 유지하고 onDidChangeConfiguration 핸들러가 `pluginOpts.serverUrl` 을 갱신하도록 수정.
 
 ## D. UX 다듬기  ★
 
@@ -56,3 +56,4 @@
 - 2026-04-30: 샘플 정리 — 시퀀스/활동 다이어그램은 현재 `g.entity` 가 없어 편집 불가, 컴포넌트/상태 다이어그램으로 교체. 한계는 **E-4** 로 후속 추적.
 - 2026-04-30: **F-1 / F-2** 완료 — architecture.md 모노레포 기준 재작성, GitHub Pages 데모 (`docs/` + `scripts/build-demo.js`) 스테이징.
 - 2026-04-30: **C-2** 완료 — `packages/pex-vscode/README.md` 사용자 가이드 신규, 루트 README 에 가이드 / 데모 / 아키텍처 / 로드맵 링크.
+- 2026-04-30: **C-3** 완료 — serverUrl 캡처 버그 수정. `extension.ts` 의 `pluginOpts` 객체 reference 를 유지하고 config 변경 시 in-place 로 갱신.
