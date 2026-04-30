@@ -163,7 +163,11 @@
     const state = {
       layout: normalizeLayout(opts.layout || metaLayout || null),
       dirty: false,
+      // Multi-select: selectedSet holds all currently-selected entities.
+      // `selected` mirrors the most-recently-added member (used as the
+      // primary anchor for drags and the legacy single-select callsites).
       selected: null,
+      selectedSet: new Set(),
       selectedEdge: null,
       dragging: null,
       draggingHandle: null,
@@ -557,14 +561,49 @@
 
     // ---- Selection + handle layer ------------------------------------------
     // selectNode / selectEdge are mutually exclusive: selecting a node clears
-    // any selected edge (and vice versa). Pass null to clear self only.
-    function selectNode(g) {
-      if (state.selected) state.selected.classList.remove('pex-selected');
-      state.selected = g;
-      if (g) {
-        g.classList.add('pex-selected');
-        if (state.selectedEdge) clearEdgeSelection();
+    // any selected edge (and vice versa).
+    //
+    // selectNode signatures:
+    //   selectNode(null)              clear all node selection
+    //   selectNode(g)                 replace selection with [g]
+    //   selectNode(g, { toggle })     toggle g in selection (Shift+click)
+    function selectNode(g, opts) {
+      opts = opts || {};
+      if (g === null) {
+        clearNodeSelection();
+        return;
       }
+      if (opts.toggle) {
+        if (state.selectedSet.has(g)) {
+          state.selectedSet.delete(g);
+          g.classList.remove('pex-selected');
+          if (state.selected === g) {
+            // pick another member as new primary, or null if empty
+            const next = state.selectedSet.values().next().value || null;
+            state.selected = next || null;
+          }
+        } else {
+          state.selectedSet.add(g);
+          g.classList.add('pex-selected');
+          state.selected = g;
+          if (state.selectedEdge) clearEdgeSelection();
+        }
+        return;
+      }
+      // Plain select: replace current selection with just g
+      for (const prev of state.selectedSet) {
+        if (prev !== g) prev.classList.remove('pex-selected');
+      }
+      state.selectedSet.clear();
+      state.selectedSet.add(g);
+      state.selected = g;
+      g.classList.add('pex-selected');
+      if (state.selectedEdge) clearEdgeSelection();
+    }
+    function clearNodeSelection() {
+      for (const el of state.selectedSet) el.classList.remove('pex-selected');
+      state.selectedSet.clear();
+      state.selected = null;
     }
     function clearEdgeSelection() {
       if (state.selectedEdge) state.selectedEdge.classList.remove('pex-edge-selected');
@@ -579,10 +618,7 @@
       if (g) {
         if (!sameEdge) state.toolbarOffset = { dx: 0, dy: 0 };
         g.classList.add('pex-edge-selected');
-        if (state.selected) {
-          state.selected.classList.remove('pex-selected');
-          state.selected = null;
-        }
+        if (state.selectedSet.size) clearNodeSelection();
         const eKey = edgeKeyForLink(svg, g);
         if (eKey && !state.layout.edges[eKey]) {
           const pathD = g.querySelector('path:not(.pex-edge-hit)').getAttribute('data-pex-orig-d') || g.querySelector('path:not(.pex-edge-hit)').getAttribute('d') || '';
@@ -774,14 +810,25 @@
     // ---- Drag handlers (entity + handles) ----------------------------------
     function startDrag(e, g) {
       e.preventDefault();
-      selectNode(g);
+      // Decide what's being dragged based on current selection state:
+      //  - g already in multi-selection → drag whole group
+      //  - g not in selection + Shift held → add g, then group drag
+      //  - g not in selection + no Shift → replace selection with g, single drag
+      if (!state.selectedSet.has(g)) {
+        selectNode(g, { toggle: !!e.shiftKey });
+      }
       const pt = clientToSvg(e, svg);
-      const q = entityQname(g);
-      const existing = state.layout.nodes[q] || { dx: 0, dy: 0 };
+      // Snapshot each member's start delta so the group moves rigidly.
+      const members = [];
+      for (const el of state.selectedSet) {
+        const q = entityQname(el);
+        const existing = state.layout.nodes[q] || { dx: 0, dy: 0 };
+        members.push({ g: el, q, originDx: existing.dx, originDy: existing.dy });
+      }
       state.dragging = {
-        g, q,
+        primary: g,
+        members,
         startX: pt.x, startY: pt.y,
-        originDx: existing.dx, originDy: existing.dy
       };
       g.setPointerCapture(e.pointerId);
       g.addEventListener('pointermove', onDrag);
@@ -792,20 +839,23 @@
       const d = state.dragging;
       if (!d) return;
       const pt = clientToSvg(e, svg);
-      const dx = Math.round(d.originDx + (pt.x - d.startX));
-      const dy = Math.round(d.originDy + (pt.y - d.startY));
-      d.g.setAttribute('transform', `translate(${dx}, ${dy})`);
-      state.layout.nodes[d.q] = { dx, dy };
+      const ox = pt.x - d.startX, oy = pt.y - d.startY;
+      for (const m of d.members) {
+        const dx = Math.round(m.originDx + ox);
+        const dy = Math.round(m.originDy + oy);
+        m.g.setAttribute('transform', `translate(${dx}, ${dy})`);
+        state.layout.nodes[m.q] = { dx, dy };
+      }
       applyEdgeFollow();
       adjustViewBox();
     }
     function endDrag(e) {
       const d = state.dragging;
       if (!d) return;
-      d.g.removeEventListener('pointermove', onDrag);
-      d.g.removeEventListener('pointerup', endDrag);
-      d.g.removeEventListener('pointercancel', endDrag);
-      try { d.g.releasePointerCapture(e.pointerId); } catch {}
+      d.primary.removeEventListener('pointermove', onDrag);
+      d.primary.removeEventListener('pointerup', endDrag);
+      d.primary.removeEventListener('pointercancel', endDrag);
+      try { d.primary.releasePointerCapture(e.pointerId); } catch {}
       state.dragging = null;
       fire();
     }
@@ -873,7 +923,10 @@
       const d = state.layout.nodes[entityQname(g)];
       if (d) g.setAttribute('transform', `translate(${d.dx}, ${d.dy})`);
       const fnDown = (e) => startDrag(e, g);
-      const fnClick = (e) => { e.stopPropagation(); selectNode(g); };
+      // pointerdown handles selection (in startDrag); click only stops the
+      // event from reaching svg's onSvgClick which would clear selection.
+      // (Doing selection on click too would double-toggle for Shift+click.)
+      const fnClick = (e) => { e.stopPropagation(); };
       g.addEventListener('pointerdown', fnDown);
       g.addEventListener('click', fnClick);
       entityHandlers.push({ g, fnDown, fnClick });
@@ -889,7 +942,7 @@
     // works regardless of focus (the SVG itself rarely takes focus).
     const onKeyDown = (e) => {
       if (e.key !== 'Escape') return;
-      if (!state.selected && !state.selectedEdge) return;
+      if (!state.selectedSet.size && !state.selectedEdge) return;
       selectNode(null);
       selectEdge(null);
     };
@@ -984,7 +1037,7 @@
         svg.querySelectorAll('path.pex-edge-hit').forEach((p) => p.remove());
         const layer = svg.querySelector('g.pex-handle-layer');
         if (layer) layer.remove();
-        if (state.selected) state.selected.classList.remove('pex-selected');
+        for (const el of state.selectedSet) el.classList.remove('pex-selected');
         if (state.selectedEdge) state.selectedEdge.classList.remove('pex-edge-selected');
         tb.remove();
         if (dirtyBadgeEl) dirtyBadgeEl.remove();
