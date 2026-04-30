@@ -34,6 +34,7 @@
 - [ ] **E-1** Multi-select / group move
 - [ ] **E-2** Qualified-name 변경 시 layout 마이그레이션
 - [ ] **E-3** plantumlEx 측 저장된 다이어그램 list / 검색 페이지
+- [ ] **E-4** 시퀀스 / 활동 다이어그램 인라인 편집 지원 — 현재 `pex-inline.js` 는 SVG `g.entity` 만 드래그 대상으로 잡음. 시퀀스(`participant`/`message`/`lifeline`)는 participant 가로 재배치, 활동(class 없는 `rect`/`polygon`/`ellipse`)은 노드 단위 식별·이동. 각각 별도 layout 모델 필요.
 
 ## F. 문서
 
@@ -51,3 +52,4 @@
 - 2026-04-29: **A-2** 완료 — connection error 분리 + 안내 + 재시도 URI 흐름. **A 카테고리 (안정성) 전체 완료**.
 - 2026-04-29: **C-1** 완료 — vsce 통한 .vsix 빌드. 사내 배포 / `code --install-extension` 설치 가능.
 - 2026-04-29: **모노레포 마이그레이션 완료** — `archi-duke/plantumlEx` 를 `packages/pex-server` 로 subtree merge (히스토리 보존), `pex-core` 추출, npm workspaces 구성. 단일 origin: archi-duke/pumlex.
+- 2026-04-30: 샘플 정리 — 시퀀스/활동 다이어그램은 현재 `g.entity` 가 없어 편집 불가, 컴포넌트/상태 다이어그램으로 교체. 한계는 **E-4** 로 후속 추적.

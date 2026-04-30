@@ -63,7 +63,13 @@
       transform: translate(-50%, -100%);
     }
     .pex-edge-toolbar.shown { display: inline-flex; }
-    .pex-edge-toolbar .label { color: #666; padding: 0 4px 0 2px; }
+    .pex-edge-toolbar .drag-handle {
+      color: #888; padding: 0 6px 0 2px;
+      cursor: grab; user-select: none;
+      font-size: 14px; line-height: 1;
+    }
+    .pex-edge-toolbar .drag-handle:active { cursor: grabbing; }
+    .pex-edge-toolbar .label { color: #666; padding: 0 4px 0 0; }
     .pex-edge-toolbar button {
       padding: 3px 9px; font-size: 12px;
       background: white; border: 1px solid #d0d7de; border-radius: 4px; cursor: pointer;
@@ -161,6 +167,10 @@
       selectedEdge: null,
       dragging: null,
       draggingHandle: null,
+      // user-applied offset for the floating edge toolbar (per selection,
+      // resets when a different edge is selected so each selection starts
+      // from the auto-positioned spot near the path midpoint)
+      toolbarOffset: { dx: 0, dy: 0 },
     };
     const onLayoutChange = opts.onLayoutChange || (() => {});
     const onSourceChange = opts.onSourceChange || null;
@@ -293,7 +303,7 @@
         const moved = d1.dx || d1.dy || d2.dx || d2.dy;
         const hasOverride = !!edgeOverride;
 
-        const firstPath = g.querySelector('path');
+        const firstPath = g.querySelector('path:not(.pex-edge-hit)');
         if (!firstPath) return;
         let origD = firstPath.getAttribute('data-pex-orig-d');
         if (!origD) { origD = firstPath.getAttribute('d'); firstPath.setAttribute('data-pex-orig-d', origD); }
@@ -310,7 +320,7 @@
         });
 
         if ((!moved && !hasOverride) || !e1G || !e2G) {
-          g.querySelectorAll('path').forEach((p) => {
+          g.querySelectorAll('path:not(.pex-edge-hit)').forEach((p) => {
             const o = p.getAttribute('data-pex-orig-d'); if (o) p.setAttribute('d', o);
           });
           g.querySelectorAll('polygon').forEach((poly) => poly.setAttribute('points', poly.getAttribute('data-pex-orig-points')));
@@ -372,7 +382,7 @@
         });
         g._pexBuilt = { ...built, newStart, newEnd, pathStart: newPathStart, pathEnd: newPathEnd, type: edgeType };
 
-        g.querySelectorAll('path').forEach((p, idx) => {
+        g.querySelectorAll('path:not(.pex-edge-hit)').forEach((p, idx) => {
           const o = p.getAttribute('data-pex-orig-d');
           p.setAttribute('d', idx === 0 ? built.d : (o || ''));
         });
@@ -407,23 +417,68 @@
           t.setAttribute('y', newStart.y + tp * ndy + rotY);
         });
       });
+      syncEdgeHitboxes();
       if (state.selectedEdge) renderHandles();
     }
 
+    // Each g.link's first <path> has fill="none" so only the visible stroke
+    // (~1px) is hit-testable — the user has to click the arrowhead instead
+    // of the line. We mirror the visible path with a transparent companion
+    // path that has a fat stroke + pointer-events="stroke" so clicking
+    // anywhere along the line selects the edge.
+    function syncEdgeHitboxes() {
+      svg.querySelectorAll('g.link').forEach((g) => {
+        const visible = g.querySelector('path:not(.pex-edge-hit)');
+        if (!visible) return;
+        const d = visible.getAttribute('d');
+        let hit = g.querySelector('path.pex-edge-hit');
+        if (!hit) {
+          hit = doc.createElementNS(SVG_NS, 'path');
+          hit.setAttribute('class', 'pex-edge-hit');
+          hit.setAttribute('fill', 'none');
+          hit.setAttribute('stroke', 'transparent');
+          hit.setAttribute('stroke-width', '14');
+          hit.setAttribute('pointer-events', 'stroke');
+          hit.style.cursor = 'pointer';
+          // Insert as first child so it sits behind the visible stroke (z-order
+          // doesn't matter for hit-testing but keeps the DOM order intuitive).
+          g.insertBefore(hit, g.firstChild);
+        }
+        if (d && hit.getAttribute('d') !== d) hit.setAttribute('d', d);
+      });
+    }
+
     // ---- Selection + handle layer ------------------------------------------
+    // selectNode / selectEdge are mutually exclusive: selecting a node clears
+    // any selected edge (and vice versa). Pass null to clear self only.
     function selectNode(g) {
       if (state.selected) state.selected.classList.remove('pex-selected');
       state.selected = g;
-      if (g) g.classList.add('pex-selected');
+      if (g) {
+        g.classList.add('pex-selected');
+        if (state.selectedEdge) clearEdgeSelection();
+      }
+    }
+    function clearEdgeSelection() {
+      if (state.selectedEdge) state.selectedEdge.classList.remove('pex-edge-selected');
+      state.selectedEdge = null;
+      hideEdgeToolbar();
+      clearHandles();
     }
     function selectEdge(g) {
-      if (state.selectedEdge) state.selectedEdge.classList.remove('pex-edge-selected');
+      const sameEdge = state.selectedEdge === g;
+      if (state.selectedEdge && !sameEdge) state.selectedEdge.classList.remove('pex-edge-selected');
       state.selectedEdge = g;
       if (g) {
+        if (!sameEdge) state.toolbarOffset = { dx: 0, dy: 0 };
         g.classList.add('pex-edge-selected');
+        if (state.selected) {
+          state.selected.classList.remove('pex-selected');
+          state.selected = null;
+        }
         const eKey = edgeKeyForLink(svg, g);
         if (eKey && !state.layout.edges[eKey]) {
-          const pathD = g.querySelector('path').getAttribute('data-pex-orig-d') || g.querySelector('path').getAttribute('d') || '';
+          const pathD = g.querySelector('path:not(.pex-edge-hit)').getAttribute('data-pex-orig-d') || g.querySelector('path:not(.pex-edge-hit)').getAttribute('d') || '';
           const wasCurved = /[CQS]/i.test(pathD);
           state.layout.edges[eKey] = { type: wasCurved ? 'curve' : 'straight' };
         }
@@ -440,6 +495,13 @@
         layer = doc.createElementNS(SVG_NS, 'g');
         layer.setAttribute('class', 'pex-handle-layer');
         svg.appendChild(layer);
+        // After dragging a curve handle, the browser synthesizes a `click`
+        // event on the handle that bubbles up to the SVG and triggers
+        // onSvgClick → selection cleared. Swallow click + pointerup at the
+        // layer so the selection survives any handle interaction.
+        const swallow = (e) => e.stopPropagation();
+        layer.addEventListener('click', swallow);
+        layer.addEventListener('pointerup', swallow);
       }
       return layer;
     }
@@ -510,9 +572,15 @@
     }
 
     // ---- Floating edge-style toolbar ---------------------------------------
+    // Sits above the selected edge's midpoint by default. The leading "⋮⋮"
+    // is a drag handle so the user can move the toolbar off the line when it
+    // covers what they're trying to edit (curve handles, anchor markers).
+    // Per-edge: offset resets when a different edge is selected.
+    const TOOLBAR_GAP = 16; // px above midpoint, breathing room for the line
     const tb = doc.createElement('div');
     tb.className = 'pex-edge-toolbar';
-    tb.innerHTML = '<span class="label">선:</span>'
+    tb.innerHTML = '<span class="drag-handle" title="드래그해서 위치 이동">⋮⋮</span>'
+      + '<span class="label">선:</span>'
       + '<button data-type="straight">직선</button>'
       + '<button data-type="curve">곡선</button>'
       + '<button data-type="ortho">꺾은선</button>';
@@ -524,26 +592,60 @@
       setEdgeType(b.dataset.type);
     });
 
+    // Drag the toolbar by its handle. Updates state.toolbarOffset and
+    // re-positions on every move; offset persists until the user selects a
+    // different edge.
+    const dragHandle = tb.querySelector('.drag-handle');
+    dragHandle.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX, startY = e.clientY;
+      const startOff = { dx: state.toolbarOffset.dx, dy: state.toolbarOffset.dy };
+      dragHandle.setPointerCapture(e.pointerId);
+      const onMove = (ev) => {
+        state.toolbarOffset = {
+          dx: startOff.dx + (ev.clientX - startX),
+          dy: startOff.dy + (ev.clientY - startY),
+        };
+        showEdgeToolbar();
+      };
+      const onUp = (ev) => {
+        dragHandle.removeEventListener('pointermove', onMove);
+        dragHandle.removeEventListener('pointerup', onUp);
+        dragHandle.removeEventListener('pointercancel', onUp);
+        try { dragHandle.releasePointerCapture(ev.pointerId); } catch {}
+      };
+      dragHandle.addEventListener('pointermove', onMove);
+      dragHandle.addEventListener('pointerup', onUp);
+      dragHandle.addEventListener('pointercancel', onUp);
+    });
+
     function showEdgeToolbar() {
       const eg = state.selectedEdge;
       if (!eg) { hideEdgeToolbar(); return; }
       const eKey = edgeKeyForLink(svg, eg);
       const ov = state.layout.edges[eKey];
-      const wasCurved = /[CQS]/i.test(eg.querySelector('path').getAttribute('data-pex-orig-d') || '');
+      const wasCurved = /[CQS]/i.test(eg.querySelector('path:not(.pex-edge-hit)').getAttribute('data-pex-orig-d') || '');
       const curType = (ov && ov.type) || (wasCurved ? 'curve' : 'straight');
       tb.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.type === curType));
-      // Position the toolbar above the path's midpoint, in container coordinates.
-      const path = eg.querySelector('path');
-      const len = path.getTotalLength();
-      const mid = path.getPointAtLength(len / 2);
-      // Convert mid (svg user units) → screen → container-local
+      // Position the toolbar above the path's full visual bounding box (so
+      // for curves we clear the apex, not just the line midpoint). Anchored
+      // at horizontal center, vertical above the bbox top.
+      const path = eg.querySelector('path:not(.pex-edge-hit)');
+      const bbox = path.getBBox();
+      const anchorX = bbox.x + bbox.width / 2;
+      const anchorY = bbox.y;
       const ctm = svg.getScreenCTM();
       const screen = svg.createSVGPoint();
-      screen.x = mid.x; screen.y = mid.y;
+      screen.x = anchorX; screen.y = anchorY;
       const sp = screen.matrixTransform(ctm);
       const cRect = container.getBoundingClientRect();
-      tb.style.left = (sp.x - cRect.left) + 'px';
-      tb.style.top  = (sp.y - cRect.top - 4) + 'px';
+      // CSS `transform: translate(-50%, -100%)` positions the toolbar's
+      // bottom-center at (left, top), so we put (left, top) at the bbox
+      // top edge minus a gap → toolbar bottom is TOOLBAR_GAP px above the
+      // line's top.
+      tb.style.left = (sp.x - cRect.left + state.toolbarOffset.dx) + 'px';
+      tb.style.top  = (sp.y - cRect.top - TOOLBAR_GAP + state.toolbarOffset.dy) + 'px';
       tb.classList.add('shown');
     }
     function hideEdgeToolbar() { tb.classList.remove('shown'); }
@@ -676,6 +778,16 @@
     });
     svg.addEventListener('click', onSvgClick);
 
+    // Esc clears any current selection. Listener is on the document so it
+    // works regardless of focus (the SVG itself rarely takes focus).
+    const onKeyDown = (e) => {
+      if (e.key !== 'Escape') return;
+      if (!state.selected && !state.selectedEdge) return;
+      selectNode(null);
+      selectEdge(null);
+    };
+    doc.addEventListener('keydown', onKeyDown);
+
     applyEdgeFollow();
     adjustViewBox();
 
@@ -757,9 +869,12 @@
         });
         linkHandlers.forEach(({ g, fnClick }) => g.removeEventListener('click', fnClick));
         svg.removeEventListener('click', onSvgClick);
+        doc.removeEventListener('keydown', onKeyDown);
         win.removeEventListener('scroll', onReposition, true);
         win.removeEventListener('resize', onReposition);
         clearHandles();
+        // Remove edge hit-area paths we injected.
+        svg.querySelectorAll('path.pex-edge-hit').forEach((p) => p.remove());
         const layer = svg.querySelector('g.pex-handle-layer');
         if (layer) layer.remove();
         if (state.selected) state.selected.classList.remove('pex-selected');

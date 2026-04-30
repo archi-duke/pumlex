@@ -41,6 +41,17 @@ Order "*" --> "*" Product
 '           "x": -68.69726470280636,
 '           "y": 9.860203842849629
 '         }
+'       },
+'       "Customer__Order": {
+'         "type": "curve",
+'         "u2": {
+'           "x": 115.6683521270752,
+'           "y": 2.595307463436086
+'         },
+'         "u1": {
+'           "x": 109.66627502441406,
+'           "y": 6.415127849936411
+'         }
 '       }
 '     }
 '   }
@@ -76,12 +87,12 @@ Admin --> UC2
 '       "Admin__System.UC2": {
 '         "type": "curve",
 '         "u2": {
-'           "x": -66.93325805664062,
-'           "y": 8.740741995181736
+'           "x": -50.22406005859375,
+'           "y": 3.7730712890625
 '         },
 '         "u1": {
-'           "x": -40.30217788497218,
-'           "y": 5.460802296456813
+'           "x": -65.50314331054688,
+'           "y": 3.697214489706468
 '         },
 '         "endAnchor": {
 '           "side": "right",
@@ -91,12 +102,12 @@ Admin --> UC2
 '       "Admin__System.UC1": {
 '         "type": "curve",
 '         "u2": {
-'           "x": -54.547935485839844,
-'           "y": -22.11752976096841
+'           "x": -74.44454193115234,
+'           "y": -2.7033538818359375
 '         },
 '         "u1": {
-'           "x": -39.40150263988092,
-'           "y": -5.250577329410255
+'           "x": -51.35821533203125,
+'           "y": 4.023026870987209
 '         },
 '         "endAnchor": {
 '           "side": "right",
@@ -111,8 +122,58 @@ Admin --> UC2
 
 위 두 번째 블록은 `Admin` 액터를 380px 우측으로 이동하는 메타가 임베드되어 있어 미리보기에서 그대로 반영되어야 합니다.
 
+## 메타 없는 클래스 (첫 편집 시 메타 자동 추가 검증용)
+
+이 블록은 `' @startmeta` 블록이 없습니다. ✎ 편집 → 엔티티 드래그 → ✓ 완료 시 마크다운에 메타가 새로 끼어들어가야 합니다.
+
+```plantuml
+@startuml
+class Account {
+  +id: UUID
+  +balance: Decimal
+}
+class Transaction {
+  +id: UUID
+  +amount: Decimal
+  +ts: Instant
+}
+Account "1" --> "*" Transaction
+@enduml
+```
+
+## 컴포넌트 다이어그램
+
+```plantuml
+@startuml
+[Web UI] as UI
+[API Server] as API
+database "PostgreSQL" as DB
+queue "Message Queue" as MQ
+UI --> API
+API --> DB
+API --> MQ
+@enduml
+```
+
+## 상태 다이어그램
+
+```plantuml
+@startuml
+[*] --> Idle
+Idle --> Loading : fetch
+Loading --> Ready : ok
+Loading --> Error : fail
+Ready --> [*]
+Error --> Idle : retry
+@enduml
+```
+
 ## 일반 코드 블록 (변형 안 됨)
 
 ```python
 print("hello")
+```
+
+```bash
+echo "이 블록도 plantumlEx 가 건드리지 않아야 합니다"
 ```
