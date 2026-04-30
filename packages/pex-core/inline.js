@@ -476,23 +476,28 @@
 
       const rect = cluster.querySelector('rect');
       const text = cluster.querySelector('text');
-      // Keep PlantUML's original padding/label band so the resized cluster
-      // looks consistent with how PlantUML drew it. We snapshot the
-      // original geometry once and reuse it as a hint.
+      // Snapshot the cluster's padding from the SVG as we first received
+      // it. Use bboxes WITH transforms applied so re-entry into edit mode
+      // works correctly: when the server has already pre-resized the
+      // cluster and pre-translated children based on the saved meta, the
+      // rect attrs and the children's translated bboxes are in the same
+      // coordinate frame — padding = (childMinX_translated) - rect.x.
+      // (If we used naked getBBox() we'd compute padLeft against the
+      // already-shifted rect.x and end up with negative or inflated
+      // padding, then expand the cluster again on each re-entry.)
       let orig = cluster._pexClusterOrig;
       if (!orig && rect) {
         const ox = parseFloat(rect.getAttribute('x'));
         const oy = parseFloat(rect.getAttribute('y'));
         const ow = parseFloat(rect.getAttribute('width'));
         const oh = parseFloat(rect.getAttribute('height'));
-        // Compute initial children bbox once to derive padding values.
         let imnX = Infinity, imnY = Infinity, imxX = -Infinity, imxY = -Infinity;
         children.forEach((c) => {
-          const b = c.getBBox();
+          const b = getEntityBBoxWithTransform(c);
           if (b.x < imnX) imnX = b.x;
           if (b.y < imnY) imnY = b.y;
-          if (b.x + b.width > imxX) imxX = b.x + b.width;
-          if (b.y + b.height > imxY) imxY = b.y + b.height;
+          if (b.x + b.w > imxX) imxX = b.x + b.w;
+          if (b.y + b.h > imxY) imxY = b.y + b.h;
         });
         orig = {
           padLeft:   imnX - ox,
