@@ -182,7 +182,8 @@ function applyLayout(svg, rawLayout) {
     const dAng = newLineAngle - oldLineAngle;
     const cosA = Math.cos(dAng), sinA = Math.sin(dAng);
 
-    $el.find('text').each((__, t) => {
+    const textsOv = (edgeOverride && edgeOverride.texts) || null;
+    $el.find('text').each((tIdx, t) => {
       const $t = $(t);
       const x0 = parseFloat($t.attr('x'));
       const y0 = parseFloat($t.attr('y'));
@@ -195,8 +196,15 @@ function applyLayout(svg, rawLayout) {
       const offX = x0 - projX, offY = y0 - projY;
       const rotX = offX * cosA - offY * sinA;
       const rotY = offX * sinA + offY * cosA;
-      $t.attr('x', String(newStart.x + tp * ndx + rotX));
-      $t.attr('y', String(newStart.y + tp * ndy + rotY));
+      // Per-text offset (Ctrl/Cmd-drag of e.g. multiplicity labels). Mirrors
+      // pex-core/inline.js applyEdgeFollow so the SAVED layout renders the
+      // same way the inline editor previewed it. Without this branch the
+      // server strips the user's fine-tune on every /render-with-layout.
+      const tov = textsOv && textsOv[tIdx];
+      const tdx = (tov && tov.dx) || 0;
+      const tdy = (tov && tov.dy) || 0;
+      $t.attr('x', String(newStart.x + tp * ndx + rotX + tdx));
+      $t.attr('y', String(newStart.y + tp * ndy + rotY + tdy));
     });
   });
   resizeContainers($, nodes);

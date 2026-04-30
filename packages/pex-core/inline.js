@@ -49,6 +49,12 @@
     .pex-inline-host g.link.pex-edge-selected > path {
       stroke: #2563eb !important; stroke-width: 2.5 !important;
     }
+    .pex-inline-host g.link text { cursor: grab; }
+    .pex-inline-host g.link text.pex-text-dragging {
+      cursor: grabbing;
+      fill: #2563eb !important;
+      font-weight: bold;
+    }
     .pex-handle { fill: #2563eb; stroke: white; stroke-width: 1.5; cursor: grab; }
     .pex-handle:active { cursor: grabbing; }
     .pex-anchor { fill: white; stroke: #2563eb; stroke-width: 1.5; cursor: grab; }
@@ -171,6 +177,7 @@
       selectedEdge: null,
       dragging: null,
       draggingHandle: null,
+      draggingText: null,
       // user-applied offset for the floating edge toolbar (per selection,
       // resets when a different edge is selected so each selection starts
       // from the auto-positioned spot near the path midpoint)
@@ -316,10 +323,18 @@
             poly.setAttribute('data-pex-orig-points', poly.getAttribute('points'));
           }
         });
-        g.querySelectorAll('text').forEach((t) => {
+        g.querySelectorAll('text').forEach((t, tIdx) => {
           if (t.getAttribute('data-pex-orig-x') === null) {
-            t.setAttribute('data-pex-orig-x', t.getAttribute('x'));
-            t.setAttribute('data-pex-orig-y', t.getAttribute('y'));
+            // The server-rendered text x/y already includes any saved per-text
+            // offset (server.js applyLayout mirrors our +tdx/+tdy step). Subtract
+            // it back out so the snapshot captures the *natural* projected
+            // position; otherwise applyEdgeFollow re-adds the offset on every
+            // call and the label drifts on re-edit.
+            const tov = (edgeOverride && edgeOverride.texts) ? edgeOverride.texts[tIdx] : null;
+            const tdx = (tov && tov.dx) || 0;
+            const tdy = (tov && tov.dy) || 0;
+            t.setAttribute('data-pex-orig-x', String(parseFloat(t.getAttribute('x')) - tdx));
+            t.setAttribute('data-pex-orig-y', String(parseFloat(t.getAttribute('y')) - tdy));
           }
         });
 
@@ -406,7 +421,8 @@
         const newLineAngle = Math.atan2(ndy, ndx);
         const dAng = newLineAngle - oldLineAngle;
         const cosA = Math.cos(dAng), sinA = Math.sin(dAng);
-        g.querySelectorAll('text').forEach((t) => {
+        const textsOv = (edgeOverride && edgeOverride.texts) || null;
+        g.querySelectorAll('text').forEach((t, tIdx) => {
           const x0 = parseFloat(t.getAttribute('data-pex-orig-x'));
           const y0 = parseFloat(t.getAttribute('data-pex-orig-y'));
           const tp = olen2 > 0
@@ -417,8 +433,15 @@
           const offX = x0 - projX, offY = y0 - projY;
           const rotX = offX * cosA - offY * sinA;
           const rotY = offX * sinA + offY * cosA;
-          t.setAttribute('x', newStart.x + tp * ndx + rotX);
-          t.setAttribute('y', newStart.y + tp * ndy + rotY);
+          // Per-text override (Ctrl/Cmd-drag of e.g. multiplicity labels) is
+          // applied on TOP of the auto-projected position, in screen-aligned
+          // SVG units. So the label keeps following the line as nodes move,
+          // and the user's fine-tune offset rides along with it.
+          const tov = textsOv && textsOv[tIdx];
+          const tdx = (tov && tov.dx) || 0;
+          const tdy = (tov && tov.dy) || 0;
+          t.setAttribute('x', newStart.x + tp * ndx + rotX + tdx);
+          t.setAttribute('y', newStart.y + tp * ndy + rotY + tdy);
         });
       });
       resizeContainers();
@@ -929,9 +952,66 @@
       fire();
     }
 
+    // ---- Per-text drag (Ctrl/Cmd + drag on edge labels) -------------------
+    // Lets the user move auxiliary text on an edge — multiplicity ("0..*"),
+    // qualifiers, role names — independently of the line. The offset rides
+    // *on top of* the auto-projection in applyEdgeFollow, so the label still
+    // follows the line as nodes move while the user's fine-tune is preserved.
+    function ensureEdgeOverrideFor(linkG, eKey) {
+      let ov = state.layout.edges[eKey];
+      if (ov) return ov;
+      const pathEl = linkG.querySelector('path:not(.pex-edge-hit)');
+      const pathD = pathEl ? (pathEl.getAttribute('data-pex-orig-d') || pathEl.getAttribute('d') || '') : '';
+      const wasCurved = /[CQS]/i.test(pathD);
+      ov = state.layout.edges[eKey] = { type: wasCurved ? 'curve' : 'straight' };
+      return ov;
+    }
+    function startTextDrag(e, linkG, textEl, idx) {
+      const eKey = edgeKeyForLink(svg, linkG);
+      if (!eKey) return;
+      const ov = ensureEdgeOverrideFor(linkG, eKey);
+      ov.texts = ov.texts || {};
+      const existing = ov.texts[idx] || { dx: 0, dy: 0 };
+      const pt = clientToSvg(e, svg);
+      textEl.classList.add('pex-text-dragging');
+      try { textEl.setPointerCapture(e.pointerId); } catch {}
+      state.draggingText = {
+        textEl, idx, eKey,
+        startX: pt.x, startY: pt.y,
+        originDx: existing.dx, originDy: existing.dy,
+      };
+      textEl.addEventListener('pointermove', onTextDrag);
+      textEl.addEventListener('pointerup', endTextDrag);
+      textEl.addEventListener('pointercancel', endTextDrag);
+    }
+    function onTextDrag(e) {
+      const d = state.draggingText;
+      if (!d) return;
+      const pt = clientToSvg(e, svg);
+      const dx = Math.round(d.originDx + (pt.x - d.startX));
+      const dy = Math.round(d.originDy + (pt.y - d.startY));
+      const ov = state.layout.edges[d.eKey];
+      if (!ov) return;  // edge gone (e.g. SVG re-rendered) — abort
+      ov.texts = ov.texts || {};
+      ov.texts[d.idx] = { dx, dy };
+      applyEdgeFollow();
+    }
+    function endTextDrag(e) {
+      const d = state.draggingText;
+      if (!d) return;
+      d.textEl.classList.remove('pex-text-dragging');
+      d.textEl.removeEventListener('pointermove', onTextDrag);
+      d.textEl.removeEventListener('pointerup', endTextDrag);
+      d.textEl.removeEventListener('pointercancel', endTextDrag);
+      try { d.textEl.releasePointerCapture(e.pointerId); } catch {}
+      state.draggingText = null;
+      fire();
+    }
+
     // ---- Wire SVG ----------------------------------------------------------
     const entityHandlers = []; // { g, fn } — for cleanup
     const linkHandlers = [];
+    const textHandlers = [];   // { textEl, fnDown, fnClick }
     const onSvgClick = () => { selectNode(null); selectEdge(null); };
 
     // Reconcile saved meta keys with the current SVG's entity qnames before
@@ -970,10 +1050,39 @@
       g.addEventListener('click', fnClick);
       entityHandlers.push({ g, fnDown, fnClick });
     });
-    svg.querySelectorAll('g.link').forEach((g) => {
-      const fnClick = (e) => { e.stopPropagation(); selectEdge(g); };
-      g.addEventListener('click', fnClick);
-      linkHandlers.push({ g, fnClick });
+    svg.querySelectorAll('g.link').forEach((linkG) => {
+      const fnClick = (e) => { e.stopPropagation(); selectEdge(linkG); };
+      linkG.addEventListener('click', fnClick);
+      linkHandlers.push({ g: linkG, fnClick });
+
+      // Per-text drag — only engages with Ctrl/Cmd held, otherwise the event
+      // bubbles up to the link's click handler and selects the whole edge.
+      linkG.querySelectorAll('text').forEach((textEl, tIdx) => {
+        const fnDown = (e) => {
+          if (!(e.ctrlKey || e.metaKey)) return;
+          e.preventDefault();
+          e.stopPropagation();
+          startTextDrag(e, linkG, textEl, tIdx);
+        };
+        // After Ctrl-drag, the resulting click would still bubble to linkG
+        // and trigger edge selection. Swallow it so the gesture is purely
+        // "move this label" with no selection side-effect.
+        const fnTextClick = (e) => {
+          if (e.ctrlKey || e.metaKey) e.stopPropagation();
+        };
+        // On macOS, Ctrl+click is the secondary-click gesture and fires the
+        // OS context menu, which would preempt our drag. Suppress it on edge
+        // labels — there's no useful default action for right-clicking a
+        // label in this editor anyway. Mac users can also use Cmd+drag,
+        // which doesn't trigger contextmenu at all.
+        const fnContextMenu = (e) => {
+          if (e.ctrlKey || e.metaKey) e.preventDefault();
+        };
+        textEl.addEventListener('pointerdown', fnDown);
+        textEl.addEventListener('click', fnTextClick);
+        textEl.addEventListener('contextmenu', fnContextMenu);
+        textHandlers.push({ textEl, fnDown, fnTextClick, fnContextMenu });
+      });
     });
     svg.addEventListener('click', onSvgClick);
 
@@ -1074,6 +1183,12 @@
           g.removeEventListener('click', fnClick);
         });
         linkHandlers.forEach(({ g, fnClick }) => g.removeEventListener('click', fnClick));
+        textHandlers.forEach(({ textEl, fnDown, fnTextClick, fnContextMenu }) => {
+          textEl.removeEventListener('pointerdown', fnDown);
+          textEl.removeEventListener('click', fnTextClick);
+          textEl.removeEventListener('contextmenu', fnContextMenu);
+          textEl.classList.remove('pex-text-dragging');
+        });
         svg.removeEventListener('click', onSvgClick);
         doc.removeEventListener('keydown', onKeyDown);
         win.removeEventListener('scroll', onReposition, true);

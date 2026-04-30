@@ -51,6 +51,7 @@ api --> db
 
 **5) 인라인 편집** — SVG 위에 마우스를 올리면 ✎ 버튼이 뜬다.
 - 클릭 → 노드 드래그 / 멀티 셀렉트(Shift+클릭) / 그룹 이동 / 엣지 곡선 핸들
+- 엣지 부속 텍스트(multiplicity, qualifier, role 등) 개별 이동 → **Ctrl + 드래그** (Mac 은 OS contextmenu 충돌을 피하려면 **Cmd + 드래그** 권장). 라벨은 라인 자동 추종에 더해 사용자 오프셋이 함께 보존됨.
 - ✓ 클릭 → 변경된 좌표가 PlantUML 소스의 `' @startmeta` 블록에 기록 (확장이 텍스트 에디터에 `WorkspaceEdit` 적용)
 - `Cmd+S` 로 저장
 

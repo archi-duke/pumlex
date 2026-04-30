@@ -35,6 +35,7 @@
 - [ ] **E-1** Multi-select / group move
 - [ ] **E-2** Qualified-name 변경 시 layout 마이그레이션 — 소스에서 엔티티 rename 시 메타의 `nodes`/`edges` 키도 따라 갱신. 미구현 시 dx/dy 와 곡선 anchor 가 조용히 손실됨. 접근 후보: (a) 명시적 `pumlex: Rename entity in layout` 명령, (b) PlantUML alias (`A as B`) 활용, (c) 구조 heuristic (위험).
 - [ ] ~~**E-3** plantumlEx 측 저장된 다이어그램 list / 검색 페이지~~ — **보류** (2026-04-30, 모노레포 전환으로 우선순위 낮아짐).
+- [x] **E-3.5** 엣지 부속 텍스트 (multiplicity, qualifier, role 등) 개별 이동 — Ctrl/Cmd + 드래그. 라벨은 라인 자동 추종 + 사용자 오프셋 둘 다 살아남는 방식 (`applyEdgeFollow` 의 텍스트 투영 끝에 `edgeOverride.texts[idx].dx/dy` 더함). 메타에 `edges[eKey].texts[i] = { dx, dy }` 형태로 저장.
 - [ ] **E-4** 시퀀스 / 활동 다이어그램 인라인 편집 지원 — 현재 `pex-inline.js` 는 SVG `g.entity` 만 드래그 대상으로 잡음. 시퀀스(`participant`/`message`/`lifeline`)는 participant 가로 재배치, 활동(class 없는 `rect`/`polygon`/`ellipse`)은 노드 단위 식별·이동. 각각 별도 layout 모델 필요.
 
 ## F. 문서
@@ -61,3 +62,5 @@
 - 2026-04-30: **B-2** 완료 (재정의) — MPE 통합 대신 호환성 매트릭스 안내로 스코프 변경. README 에 호환되는 인핸서 (mermaid / github-styles / mdmath / all-in-one) + MPE 병행 워크플로우 명시.
 - 2026-04-30: **D-1** 완료 — placeholder spinner + elapsed time. inFlight Set→Map 전환으로 startTime stable.
 - 2026-04-30: **D-2** 완료 — `parseSource → embedMeta → parseSource` round-trip 으로 메타 자동 추가 정상 동작 확인. 코드 변경 없음, README caveat 만 정리.
+- 2026-04-30: **edge selection 버그 수정** — `showEdgeToolbar` 강제 reflow + `ensureHandleLayer` z-order 방어 + onReposition 에 renderHandles 추가. 라인 선택 시 toolbar / 핸들이 스크롤 전까지 안 보이던 문제 해결.
+- 2026-04-30: **E-3.5** 완료 — Ctrl/Cmd + 드래그로 엣지 부속 텍스트 (multiplicity 등) 개별 이동. `state.draggingText` 추가, applyEdgeFollow 텍스트 투영에 per-text offset, g.link text 별 pointerdown / click 핸들러.
