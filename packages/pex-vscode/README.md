@@ -89,6 +89,25 @@ api --> db
 
 마커도 메타도 없는 fence 는 다른 확장(또는 markdown-it 기본 코드 블록 렌더러)으로 떨어진다.
 
+## 호환되는 마크다운 뷰어 / 인핸서
+
+pumlex 는 VS Code 의 **built-in markdown preview** 에 markdown-it 플러그인 + preview script 로 부착된다 (`markdown.markdownItPlugins` / `markdown.previewScripts` contribution). 같은 contribution point 를 사용하는 다른 확장과는 자연스럽게 공존하므로, 다음과 같은 인핸서들과 함께 사용해도 인라인 편집이 그대로 동작한다:
+
+| 확장 | 추가되는 기능 |
+|---|---|
+| `bierner.markdown-mermaid` | mermaid 다이어그램 |
+| `bierner.markdown-preview-github-styles` | GitHub 스타일링 |
+| `goessner.mdmath` 또는 `bierner.markdown-it-katex` | KaTeX 수식 |
+| `bierner.markdown-emoji` / `bierner.markdown-yaml-preamble` | emoji / YAML preamble |
+| `yzhang.markdown-all-in-one` | TOC / 단축키 / 리스트 편집 (preview 자체는 built-in 사용) |
+
+**Markdown Preview Enhanced (MPE, `shd101wyy.markdown-preview-enhanced`)** 는 자체 webview 와 mume 기반 파이프라인을 사용해 built-in preview 를 완전히 대체한다. 그래서:
+
+- pumlex 의 markdown-it 플러그인은 MPE preview 에서 실행되지 않는다 — 인라인 편집 불가.
+- MPE 가 제공하는 third-party API 는 사용자 워크스페이스의 `parser.js` 뿐이고, 이건 third-party 확장이 programmatic 으로 주입할 수 없다.
+
+**권장 워크플로우**: pumlex 사용자는 인라인 편집이 필요한 작업은 **built-in preview** 로 (Cmd+K V), MPE 의 다른 기능 (presentation, PDF export 등) 이 필요할 때만 MPE 를 켜는 식으로 두 preview 를 병행. 두 미리보기 패널은 같은 `.md` 에 대해 동시에 띄울 수 있다.
+
 ## CSP / 웹뷰 권한 — 별도 설정 불필요
 
 확장은 **extension host 측에서** `pumlex.serverUrl` 을 호출하고 SVG 를 markdown 페이지에 inline 시킨다. 결과적으로:
@@ -114,7 +133,7 @@ api --> db
 ## 알려진 제약
 
 - **시퀀스 / 활동 다이어그램 인라인 편집 미지원** (ROADMAP **E-4**). 컴포넌트 / 상태 / 유스케이스 / 클래스 다이어그램은 지원.
-- **Markdown Preview Enhanced (MPE)** 와는 호환되지 않음 — MPE 는 자체 webview 사용 (ROADMAP **B-2**).
+- **MPE preview 에서는 인라인 편집 불가** — 자체 webview 사용 + third-party 확장이 주입할 API 부재. built-in preview 로 편집 후 MPE 는 표시 전용으로 사용. 위 "호환되는 마크다운 뷰어 / 인핸서" 섹션 참고.
 
 ## 라이선스
 
