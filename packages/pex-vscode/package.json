@@ -74,8 +74,8 @@
   },
   "scripts": {
     "copy:core": "node ./scripts/copy-core.js",
-    "compile": "npm run copy:core && tsc -p ./",
-    "watch": "npm run copy:core && tsc -watch -p ./",
+    "compile": "npm run copy:core && npx tsc -p ./",
+    "watch": "npm run copy:core && npx tsc -watch -p ./",
     "vscode:prepublish": "npm run compile",
     "package": "vsce package --no-dependencies"
   },
