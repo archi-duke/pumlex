@@ -645,6 +645,12 @@
         const swallow = (e) => e.stopPropagation();
         layer.addEventListener('click', swallow);
         layer.addEventListener('pointerup', swallow);
+      } else if (svg.lastElementChild !== layer) {
+        // SVG has no z-index — paint order is document order. If anything
+        // (a re-render, a defensively-added child) shifted the handle layer
+        // away from the end, handles would paint underneath entities/links.
+        // Re-append puts it back on top.
+        svg.appendChild(layer);
       }
       return layer;
     }
@@ -771,6 +777,15 @@
       const wasCurved = /[CQS]/i.test(eg.querySelector('path:not(.pex-edge-hit)').getAttribute('data-pex-orig-d') || '');
       const curType = (ov && ov.type) || (wasCurved ? 'curve' : 'straight');
       tb.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.type === curType));
+      // applyEdgeFollow may have just mutated the path's `d` attribute
+      // (selectEdge → applyEdgeFollow → setAttribute → showEdgeToolbar all
+      // run synchronously in one click handler). In some webview
+      // environments getBBox / getScreenCTM / getBoundingClientRect can
+      // still report the *previous* layout for one frame, which positions
+      // the toolbar against the old path — invisible until a later scroll
+      // or resize event triggers another showEdgeToolbar with fresh values.
+      // Force a synchronous layout flush before reading.
+      void container.offsetHeight;
       // Position the toolbar above the path's full visual bounding box (so
       // for curves we clear the apex, not just the line midpoint). Anchored
       // at horizontal center, vertical above the bbox top.
@@ -976,7 +991,14 @@
     adjustViewBox();
 
     // Reposition the floating toolbar on scroll/resize so it tracks the edge.
-    const onReposition = () => { if (state.selectedEdge) showEdgeToolbar(); };
+    // renderHandles runs too so any layout shift that affects SVG element
+    // ordering (e.g. async DOM mutations from the markdown preview host)
+    // gets the handle layer re-promoted to the top of the SVG.
+    const onReposition = () => {
+      if (!state.selectedEdge) return;
+      showEdgeToolbar();
+      renderHandles();
+    };
     win.addEventListener('scroll', onReposition, true);
     win.addEventListener('resize', onReposition);
 
