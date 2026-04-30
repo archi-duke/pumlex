@@ -25,6 +25,11 @@ npm run start:server   # 기본 :3030, PORT=xxxx 로 변경 가능
 npm run build:vscode      # tsc + pex-core 복사
 npm run package:vscode    # .vsix 생성
 code --install-extension packages/pex-vscode/pumlex-*.vsix
+
+# (3-c) GitHub Pages 데모 — https://archi-duke.github.io/pumlex/
+#       정적 호스팅이라 로컬 :3030 서버를 띄워 두고 페이지에서 URL 만 가리키면 됨.
+#       사본 갱신:
+npm run build:demo        # docs/ 재빌드
 ```
 
 확장 개발 시: `code packages/pex-vscode` → F5.

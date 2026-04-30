@@ -16,6 +16,7 @@
   "scripts": {
     "start:server": "npm start --workspace=@archi-duke/pex-server",
     "build:vscode": "npm run compile --workspace=pumlex",
-    "package:vscode": "npm run package --workspace=pumlex"
+    "package:vscode": "npm run package --workspace=pumlex",
+    "build:demo": "node scripts/build-demo.js"
   }
 }
