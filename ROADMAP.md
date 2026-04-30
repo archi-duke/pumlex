@@ -31,9 +31,10 @@
 
 ## E. 기능 보강 (장기)
 
+- [ ] **E-0** 컨테이너(rectangle/package/node 등) 자동 리사이즈 — 내부 엔티티가 드래그로 이동하면 감싸는 컨테이너 크기가 그에 맞게 자동 조정. 현재는 컨테이너가 고정 크기라 내부 요소가 밖으로 나가거나 빈 공간이 생김. 부모-자식 관계는 SVG 의 nested `g.entity` 또는 PlantUML source 에서 추출.
 - [ ] **E-1** Multi-select / group move
-- [ ] **E-2** Qualified-name 변경 시 layout 마이그레이션
-- [ ] **E-3** plantumlEx 측 저장된 다이어그램 list / 검색 페이지
+- [ ] **E-2** Qualified-name 변경 시 layout 마이그레이션 — 소스에서 엔티티 rename 시 메타의 `nodes`/`edges` 키도 따라 갱신. 미구현 시 dx/dy 와 곡선 anchor 가 조용히 손실됨. 접근 후보: (a) 명시적 `pumlex: Rename entity in layout` 명령, (b) PlantUML alias (`A as B`) 활용, (c) 구조 heuristic (위험).
+- [ ] ~~**E-3** plantumlEx 측 저장된 다이어그램 list / 검색 페이지~~ — **보류** (2026-04-30, 모노레포 전환으로 우선순위 낮아짐).
 - [ ] **E-4** 시퀀스 / 활동 다이어그램 인라인 편집 지원 — 현재 `pex-inline.js` 는 SVG `g.entity` 만 드래그 대상으로 잡음. 시퀀스(`participant`/`message`/`lifeline`)는 participant 가로 재배치, 활동(class 없는 `rect`/`polygon`/`ellipse`)은 노드 단위 식별·이동. 각각 별도 layout 모델 필요.
 
 ## F. 문서

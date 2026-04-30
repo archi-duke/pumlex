@@ -417,8 +417,110 @@
           t.setAttribute('y', newStart.y + tp * ndy + rotY);
         });
       });
+      resizeContainers();
       syncEdgeHitboxes();
       if (state.selectedEdge) renderHandles();
+    }
+
+    // PlantUML clusters (rectangle/package/node) wrap their children but
+    // don't auto-resize when a child moves. We derive the cluster's rect
+    // from the union of its children's current bboxes (with deltas), plus
+    // padding for the label band. Deepest cluster first so nested
+    // containers settle correctly.
+    function resizeContainers() {
+      const clusters = [...svg.querySelectorAll('g.cluster')];
+      if (!clusters.length) return;
+      clusters.sort((a, b) => {
+        const ad = (a.getAttribute('data-qualified-name') || '').split('.').length;
+        const bd = (b.getAttribute('data-qualified-name') || '').split('.').length;
+        return bd - ad; // deepest first
+      });
+      for (const cluster of clusters) resizeOneCluster(cluster);
+    }
+
+    function getEntityBBoxWithTransform(g) {
+      const b = g.getBBox();
+      const m = (g.getAttribute('transform') || '').match(/translate\(\s*([-\d.]+)[,\s]+([-\d.]+)\s*\)/);
+      const dx = m ? parseFloat(m[1]) : 0;
+      const dy = m ? parseFloat(m[2]) : 0;
+      return { x: b.x + dx, y: b.y + dy, w: b.width, h: b.height };
+    }
+
+    function resizeOneCluster(cluster) {
+      const cqname = cluster.getAttribute('data-qualified-name');
+      if (!cqname) return;
+      const prefix = cqname + '.';
+      // Direct children only (one extra dot in qname). Both g.entity and
+      // nested g.cluster qualify so we recursively support nesting.
+      const children = [];
+      svg.querySelectorAll('g.entity, g.cluster').forEach((g) => {
+        if (g === cluster) return;
+        const q = g.getAttribute('data-qualified-name');
+        if (!q || !q.startsWith(prefix)) return;
+        const rest = q.slice(prefix.length);
+        if (rest.includes('.')) return;
+        children.push(g);
+      });
+      if (!children.length) return;
+
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const child of children) {
+        const b = getEntityBBoxWithTransform(child);
+        if (!isFinite(b.x) || !isFinite(b.y) || b.w <= 0 || b.h <= 0) continue;
+        if (b.x < minX) minX = b.x;
+        if (b.y < minY) minY = b.y;
+        if (b.x + b.w > maxX) maxX = b.x + b.w;
+        if (b.y + b.h > maxY) maxY = b.y + b.h;
+      }
+      if (!isFinite(minX)) return;
+
+      const rect = cluster.querySelector('rect');
+      const text = cluster.querySelector('text');
+      // Keep PlantUML's original padding/label band so the resized cluster
+      // looks consistent with how PlantUML drew it. We snapshot the
+      // original geometry once and reuse it as a hint.
+      let orig = cluster._pexClusterOrig;
+      if (!orig && rect) {
+        const ox = parseFloat(rect.getAttribute('x'));
+        const oy = parseFloat(rect.getAttribute('y'));
+        const ow = parseFloat(rect.getAttribute('width'));
+        const oh = parseFloat(rect.getAttribute('height'));
+        // Compute initial children bbox once to derive padding values.
+        let imnX = Infinity, imnY = Infinity, imxX = -Infinity, imxY = -Infinity;
+        children.forEach((c) => {
+          const b = c.getBBox();
+          if (b.x < imnX) imnX = b.x;
+          if (b.y < imnY) imnY = b.y;
+          if (b.x + b.width > imxX) imxX = b.x + b.width;
+          if (b.y + b.height > imxY) imxY = b.y + b.height;
+        });
+        orig = {
+          padLeft:   imnX - ox,
+          padRight:  (ox + ow) - imxX,
+          padTop:    imnY - oy,
+          padBottom: (oy + oh) - imxY,
+          textOffsetY: text ? parseFloat(text.getAttribute('y')) - oy : 0,
+        };
+        cluster._pexClusterOrig = orig;
+      }
+      if (!rect || !orig) return;
+
+      const newX = minX - orig.padLeft;
+      const newY = minY - orig.padTop;
+      const newW = (maxX - minX) + orig.padLeft + orig.padRight;
+      const newH = (maxY - minY) + orig.padTop + orig.padBottom;
+      rect.setAttribute('x', newX);
+      rect.setAttribute('y', newY);
+      rect.setAttribute('width', newW);
+      rect.setAttribute('height', newH);
+
+      // Keep the label centered horizontally at the same vertical offset
+      // PlantUML originally used relative to the rect's top edge.
+      if (text) {
+        const tl = parseFloat(text.getAttribute('textLength'));
+        if (isFinite(tl)) text.setAttribute('x', newX + (newW - tl) / 2);
+        text.setAttribute('y', newY + orig.textOffsetY);
+      }
     }
 
     // Each g.link's first <path> has fill="none" so only the visible stroke
