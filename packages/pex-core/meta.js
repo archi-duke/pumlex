@@ -61,5 +61,68 @@
     return `${clean}\n\n${META_START}\n${commented}\n${META_END}\n`;
   }
 
-  return { embedMeta, extractMeta, parseSource, stripMeta, META_START, META_END };
+  // Detect entity renames between a saved layout and the current SVG by
+  // matching orphaned meta keys (in layout, not in svg) to fresh entity
+  // qnames (in svg, not in layout). Returns a `{ old: new }` map of
+  // confidently-detected renames, mutates `layout` in place to reassign
+  // node and edge keys to the new names.
+  //
+  // Strategy (in order, stops at the first match):
+  //   1. 1 orphan + 1 fresh           → unambiguous rename
+  //   2. 1 orphan + 1 substring fresh → substring-related rename
+  //      (e.g. `Order` → `PurchaseOrder`, `User` → `UserV2`)
+  //   3. any other shape              → skip (caller may prompt)
+  //
+  // svgQnames must be the set/array of entity qnames currently in the
+  // rendered SVG. Layout shape: { nodes: { qname: {dx,dy} }, edges: { "A__B": {...} } }.
+  function migrateRenamedKeys(svgQnames, layout) {
+    if (!layout || !layout.nodes) return {};
+    const present = new Set(svgQnames);
+    const orphaned = Object.keys(layout.nodes).filter((k) => !present.has(k));
+    const fresh = [...present].filter((q) => !(q in layout.nodes));
+    if (orphaned.length !== 1) return {};
+
+    const oldName = orphaned[0];
+    let newName = null;
+    if (fresh.length === 1) {
+      newName = fresh[0];
+    } else {
+      // Substring fallback: find fresh entities whose qname overlaps the
+      // orphan as a substring on either side. Most refactors append/prepend
+      // (`Order` → `PurchaseOrder`, `OrderV2`).
+      const oldLow = oldName.toLowerCase();
+      const subs = fresh.filter((q) => {
+        const low = q.toLowerCase();
+        return low.includes(oldLow) || oldLow.includes(low);
+      });
+      if (subs.length === 1) newName = subs[0];
+    }
+    if (!newName) return {};
+    const renames = { [oldName]: newName };
+
+    // Migrate the node entry
+    layout.nodes[newName] = layout.nodes[oldName];
+    delete layout.nodes[oldName];
+
+    // Migrate edge keys that referenced the renamed node on either side
+    if (layout.edges) {
+      for (const eKey of Object.keys(layout.edges)) {
+        const idx = eKey.indexOf('__');
+        if (idx === -1) continue;
+        const a = eKey.slice(0, idx);
+        const b = eKey.slice(idx + 2);
+        const newA = renames[a] || a;
+        const newB = renames[b] || b;
+        if (newA === a && newB === b) continue;
+        const newKey = `${newA}__${newB}`;
+        if (newKey !== eKey) {
+          layout.edges[newKey] = layout.edges[eKey];
+          delete layout.edges[eKey];
+        }
+      }
+    }
+    return renames;
+  }
+
+  return { embedMeta, extractMeta, parseSource, stripMeta, migrateRenamedKeys, META_START, META_END };
 });

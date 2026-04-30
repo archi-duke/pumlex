@@ -919,6 +919,30 @@
     const linkHandlers = [];
     const onSvgClick = () => { selectNode(null); selectEdge(null); };
 
+    // Reconcile saved meta keys with the current SVG's entity qnames before
+    // wiring transforms. If the user renamed an entity in source, our saved
+    // delta lives under the OLD name; without migration the rename would
+    // silently drop the layout. After 1:1 detection state.layout is in sync
+    // and we mark dirty so the next commit writes the cleaned meta back.
+    if (PexMeta && PexMeta.migrateRenamedKeys) {
+      const liveQnames = [];
+      svg.querySelectorAll('g.entity').forEach((g) => {
+        const q = entityQname(g);
+        if (q) liveQnames.push(q);
+      });
+      const renames = PexMeta.migrateRenamedKeys(liveQnames, state.layout);
+      if (renames && Object.keys(renames).length > 0) {
+        // Fire so the host (markdown extension, demo-host page) gets the
+        // updated source with the migrated meta keys and can write it back.
+        try { onLayoutChange(state.layout); } catch {}
+        if (onSourceChange) {
+          const s = buildSource();
+          if (s !== null) { try { onSourceChange(s); } catch {} }
+        }
+        setDirty(true);
+      }
+    }
+
     svg.querySelectorAll('g.entity').forEach((g) => {
       const d = state.layout.nodes[entityQname(g)];
       if (d) g.setAttribute('transform', `translate(${d.dx}, ${d.dy})`);

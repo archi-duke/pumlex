@@ -61,9 +61,7 @@ function normalizeLayout(raw) {
 
 function applyLayout(svg, rawLayout) {
   const layout = normalizeLayout(rawLayout);
-  const nodes = layout.nodes;
-  const edges = layout.edges;
-  if (Object.keys(nodes).length === 0 && Object.keys(edges).length === 0) return svg;
+  if (Object.keys(layout.nodes).length === 0 && Object.keys(layout.edges).length === 0) return svg;
   const $ = cheerio.load(svg, { xmlMode: true });
 
   // Build qname ↔ id maps so PlantUML's auto-generated `ent00XX` ids can shift
@@ -76,6 +74,14 @@ function applyLayout(svg, rawLayout) {
     const q = $el.attr('data-qualified-name') || id;
     if (q) { qToEl[q] = $el; idToQ[id] = q; }
   });
+
+  // Detect simple 1:1 renames (orphan meta key + fresh SVG qname) and
+  // migrate the layout's node + edge keys before applying. Lets a meta
+  // saved against `Order` keep its dx/dy after the user renames the
+  // class to `PurchaseOrder` in source, without manual cleanup.
+  PexMeta.migrateRenamedKeys(Object.keys(qToEl), layout);
+  const nodes = layout.nodes;
+  const edges = layout.edges;
 
   for (const [qname, delta] of Object.entries(nodes)) {
     const $el = qToEl[qname];
