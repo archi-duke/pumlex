@@ -55,6 +55,29 @@
       fill: #2563eb !important;
       font-weight: bold;
     }
+    /* Sequence diagram — participant columns are draggable horizontally.
+       Lifeline / head / tail share the same x and translate together. */
+    .pex-inline-host g.participant-lifeline,
+    .pex-inline-host g.participant-head,
+    .pex-inline-host g.participant-tail { cursor: grab; }
+    .pex-inline-host g.participant-lifeline.pex-dragging,
+    .pex-inline-host g.participant-head.pex-dragging,
+    .pex-inline-host g.participant-tail.pex-dragging { cursor: grabbing; }
+    .pex-inline-host g.participant-lifeline:hover line {
+      stroke: #2563eb !important; stroke-width: 1.5 !important;
+    }
+    .pex-inline-host g.participant-head:hover rect,
+    .pex-inline-host g.participant-tail:hover rect {
+      stroke: #2563eb !important; stroke-width: 2 !important;
+    }
+    .pex-inline-host g.participant-head:hover ellipse,
+    .pex-inline-host g.participant-tail:hover ellipse {
+      stroke: #2563eb !important; stroke-width: 2 !important;
+    }
+    .pex-inline-host g.participant-head:hover path:not([fill="none"]),
+    .pex-inline-host g.participant-tail:hover path:not([fill="none"]) {
+      stroke: #2563eb !important; stroke-width: 2 !important;
+    }
     .pex-handle { fill: #2563eb; stroke: white; stroke-width: 1.5; cursor: grab; }
     .pex-handle:active { cursor: grabbing; }
     .pex-anchor { fill: white; stroke: #2563eb; stroke-width: 1.5; cursor: grab; }
@@ -122,11 +145,16 @@
   }
 
   function normalizeLayout(raw) {
-    if (!raw) return { nodes: {}, edges: {} };
-    if (raw.nodes !== undefined || raw.edges !== undefined) {
-      return { nodes: raw.nodes || {}, edges: raw.edges || {} };
+    if (!raw) return { nodes: {}, edges: {}, participants: {} };
+    if (raw.nodes !== undefined || raw.edges !== undefined || raw.participants !== undefined) {
+      return {
+        nodes: raw.nodes || {},
+        edges: raw.edges || {},
+        participants: raw.participants || {},
+      };
     }
-    return { nodes: raw, edges: {} };
+    // Legacy plain-object form (pre-edges): treat as nodes-only.
+    return { nodes: raw, edges: {}, participants: {} };
   }
 
   function clientToSvg(e, svg) {
@@ -178,6 +206,8 @@
       dragging: null,
       draggingHandle: null,
       draggingText: null,
+      // Sequence-only: in-progress participant column drag.
+      draggingParticipant: null,
       // user-applied offset for the floating edge toolbar (per selection,
       // resets when a different edge is selected so each selection starts
       // from the auto-positioned spot near the path midpoint)
@@ -190,10 +220,14 @@
       if (!cleanSource || !PexMeta) return null;
       const hasLayout = state.layout && (
         Object.keys(state.layout.nodes || {}).length ||
-        Object.keys(state.layout.edges || {}).length
+        Object.keys(state.layout.edges || {}).length ||
+        Object.keys(state.layout.participants || {}).length
       );
+      // Schema 2 added `layout.participants` (sequence diagram column dx).
+      // Older readers normalize unknown sub-keys to `{}` and ignore — bumping
+      // the marker is a hint, not a hard gate.
       return hasLayout
-        ? PexMeta.embedMeta(cleanSource, { schema: 1, layout: state.layout })
+        ? PexMeta.embedMeta(cleanSource, { schema: 2, layout: state.layout })
         : cleanSource;
     }
 
@@ -241,6 +275,412 @@
       setDirty(true);
       saveDraft();
     };
+
+    // ---- Diagram-type dispatch ---------------------------------------------
+    // Sequence/activity diagrams emit completely different SVG markup from
+    // the class/component/state family the generic flow below was built for
+    // (no g.entity, no g.link, no data-qualified-name on shapes — sequence
+    // uses g.participant-* + g.message, activity has bare shapes). Each
+    // diagram type gets its own wiring path below. Anything not recognised
+    // falls through to the generic g.entity logic.
+    const diagramType = svg.getAttribute('data-diagram-type');
+    if (diagramType === 'SEQUENCE') {
+      // ===== SEQUENCE adapter =================================================
+      // Editing model: a "participant" is a vertical column composed of a
+      // lifeline (dashed line + transparent click rect), a head (top label /
+      // icon), an optional tail (bottom mirror), and zero or more activation
+      // rects pinned to that column's x. The user drags the column horizontally;
+      // we translate every visible piece by the same dx and recompute every
+      // message's line/arrowhead/text x-coords from the participants' deltas.
+      // Y is determined by message order in source — not draggable.
+
+      // Build participant inventory keyed by qualified name (uid is volatile —
+      // PlantUML auto-generates partN, mirrors the policy we use for ent ids).
+      const partsByQname = new Map(); // qname -> { qname, lifelineG, headG, tailG, activationRects[], currentDx, _origCenter }
+      const uidToQname = new Map();   // partN -> qname
+
+      function getOrCreatePart(q) {
+        let p = partsByQname.get(q);
+        if (!p) {
+          p = { qname: q, lifelineG: null, headG: null, tailG: null, activationRects: [], currentDx: 0, _origCenter: null };
+          partsByQname.set(q, p);
+        }
+        return p;
+      }
+
+      svg.querySelectorAll('g.participant-lifeline').forEach((g) => {
+        const q = g.getAttribute('data-qualified-name');
+        const uid = g.getAttribute('data-entity-uid');
+        if (!q) return;
+        if (uid) uidToQname.set(uid, q);
+        getOrCreatePart(q).lifelineG = g;
+      });
+      svg.querySelectorAll('g.participant-head').forEach((g) => {
+        const q = g.getAttribute('data-qualified-name');
+        if (!q) return;
+        getOrCreatePart(q).headG = g;
+      });
+      svg.querySelectorAll('g.participant-tail').forEach((g) => {
+        const q = g.getAttribute('data-qualified-name');
+        if (!q) return;
+        getOrCreatePart(q).tailG = g;
+      });
+
+      // Display-name → qname map. Activation rects identify their owner only
+      // by `<title>` text (which is the participant's display name, e.g.
+      // "Web App" for qname "Web"). Lifelines carry the same display in their
+      // own <title>, so we can build the lookup from the lifelines we already
+      // indexed.
+      const displayToQname = new Map();
+      partsByQname.forEach((p, q) => {
+        const t = p.lifelineG && p.lifelineG.querySelector('title');
+        const display = (t && t.textContent.trim()) || q;
+        displayToQname.set(display, q);
+      });
+
+      // Collect activation rects: top-level <g> children of the SVG's main
+      // <g> that have NO class and contain just `<title> + <rect>` — that's
+      // PlantUML's signature for a per-message activation box.
+      const mainG = svg.querySelector('g'); // outermost group inside <svg>
+      if (mainG) {
+        for (const child of mainG.children) {
+          if (child.tagName.toLowerCase() !== 'g') continue;
+          if (child.hasAttribute('class')) continue;
+          const titleEl = child.firstElementChild;
+          if (!titleEl || titleEl.tagName.toLowerCase() !== 'title') continue;
+          const display = titleEl.textContent.trim();
+          const q = displayToQname.get(display);
+          if (!q) continue;
+          const p = partsByQname.get(q);
+          if (p) p.activationRects.push(child);
+        }
+      }
+
+      // Snapshot each participant's ORIGINAL center x (used by message-geom
+      // to decide which line endpoint belongs to which participant). Must be
+      // captured BEFORE any transform is applied.
+      function getOrigCenter(p) {
+        if (p._origCenter !== null) return p._origCenter;
+        // Lifeline's dashed <line> has x1==x2 == column center.
+        const line = p.lifelineG && p.lifelineG.querySelector('line');
+        if (line) {
+          p._origCenter = parseFloat(line.getAttribute('x1'));
+        } else {
+          // Fallback: use the transparent click rect's mid-x.
+          const rect = p.lifelineG && p.lifelineG.querySelector('rect');
+          if (rect) {
+            const x = parseFloat(rect.getAttribute('x'));
+            const w = parseFloat(rect.getAttribute('width'));
+            p._origCenter = x + w / 2;
+          } else {
+            p._origCenter = 0;
+          }
+        }
+        return p._origCenter;
+      }
+      partsByQname.forEach(getOrigCenter); // prime cache
+
+      // Apply the column translate to every visible piece of one participant.
+      function applyParticipantTransform(p) {
+        const t = p.currentDx ? `translate(${p.currentDx}, 0)` : null;
+        const apply = (g) => {
+          if (!g) return;
+          if (t) g.setAttribute('transform', t);
+          else g.removeAttribute('transform');
+        };
+        apply(p.lifelineG);
+        apply(p.headG);
+        apply(p.tailG);
+        p.activationRects.forEach(apply);
+      }
+
+      // Recompute every message's geometry from current participant deltas.
+      // Strategy per message:
+      //   - line (single horizontal line between two columns):
+      //       For x1 and x2 separately — find which participant's center it
+      //       was originally closer to. That end shifts by that participant's
+      //       dx. (Handles arrows in either direction without special-casing.)
+      //   - polygon (arrowhead at destination):
+      //       Compute centroid x; whichever lifeline center is closer wins
+      //       the dx; translate every x coord in `points` by that dx.
+      //   - text (label, may sit at any t along the line):
+      //       Project onto the original line, get tp ∈ [0, 1], shift x by
+      //       dx1 + tp * (dx2 - dx1) so labels track the line endpoints
+      //       smoothly. (Mirrors how applyEdgeFollow projects edge labels
+      //       in the generic class-diagram path.)
+      function applyMessageGeometry() {
+        svg.querySelectorAll('g.message').forEach((g) => {
+          const uid1 = g.getAttribute('data-entity-1');
+          const uid2 = g.getAttribute('data-entity-2');
+          const q1 = uidToQname.get(uid1);
+          const q2 = uidToQname.get(uid2);
+          if (!q1 || !q2) return;
+          const p1 = partsByQname.get(q1);
+          const p2 = partsByQname.get(q2);
+          if (!p1 || !p2) return;
+          const dx1 = p1.currentDx || 0;
+          const dx2 = p2.currentDx || 0;
+          const c1 = getOrigCenter(p1);
+          const c2 = getOrigCenter(p2);
+
+          // <line> — capture original x1/x2 once; replay on every call.
+          const line = g.querySelector('line');
+          let ox1 = null, ox2 = null;
+          if (line) {
+            let s1 = line.getAttribute('data-pex-orig-x1');
+            let s2 = line.getAttribute('data-pex-orig-x2');
+            if (s1 === null) {
+              s1 = line.getAttribute('x1');
+              s2 = line.getAttribute('x2');
+              line.setAttribute('data-pex-orig-x1', s1);
+              line.setAttribute('data-pex-orig-x2', s2);
+            }
+            ox1 = parseFloat(s1);
+            ox2 = parseFloat(s2);
+            const x1IsQ1 = Math.abs(ox1 - c1) <= Math.abs(ox1 - c2);
+            const x1Dx = x1IsQ1 ? dx1 : dx2;
+            const x2Dx = x1IsQ1 ? dx2 : dx1;
+            line.setAttribute('x1', String(ox1 + x1Dx));
+            line.setAttribute('x2', String(ox2 + x2Dx));
+          }
+
+          // <polygon> — arrowhead. Pointed at one end of the line; pick that
+          // end's dx by centroid proximity.
+          g.querySelectorAll('polygon').forEach((poly) => {
+            let opts = poly.getAttribute('data-pex-orig-points');
+            if (opts === null) {
+              opts = poly.getAttribute('points');
+              poly.setAttribute('data-pex-orig-points', opts);
+            }
+            const nums = opts.trim().split(/[\s,]+/).filter((s) => s.length).map(parseFloat);
+            let cx = 0, n = 0;
+            for (let i = 0; i + 1 < nums.length; i += 2) { cx += nums[i]; n++; }
+            cx = n ? cx / n : 0;
+            const arrowDx = Math.abs(cx - c1) <= Math.abs(cx - c2) ? dx1 : dx2;
+            const out = [];
+            for (let i = 0; i + 1 < nums.length; i += 2) {
+              out.push(`${nums[i] + arrowDx},${nums[i + 1]}`);
+            }
+            poly.setAttribute('points', out.join(' '));
+          });
+
+          // <text> — labels. Linear-interpolate the dx by where the label's
+          // original x sat along the original line.
+          if (line && ox1 !== null) {
+            const span = ox2 - ox1;
+            g.querySelectorAll('text').forEach((t) => {
+              let s = t.getAttribute('data-pex-orig-x');
+              if (s === null) {
+                s = t.getAttribute('x');
+                t.setAttribute('data-pex-orig-x', s);
+              }
+              const ox = parseFloat(s);
+              const tp = (Math.abs(span) > 0.001) ? Math.max(0, Math.min(1, (ox - ox1) / span)) : 0.5;
+              const x1IsQ1 = Math.abs(ox1 - c1) <= Math.abs(ox1 - c2);
+              const startDx = x1IsQ1 ? dx1 : dx2;
+              const endDx   = x1IsQ1 ? dx2 : dx1;
+              const labelDx = startDx + tp * (endDx - startDx);
+              t.setAttribute('x', String(ox + labelDx));
+            });
+          }
+        });
+      }
+
+      // Sequence-flavoured viewBox adjust: extend bounds to enclose every
+      // translated participant element. (The generic adjustViewBox iterates
+      // g.entity which doesn't exist here.)
+      function adjustViewBoxSequence() {
+        let orig = svg.getAttribute('data-pex-original-viewbox');
+        if (!orig) {
+          orig = svg.getAttribute('viewBox') || '';
+          svg.setAttribute('data-pex-original-viewbox', orig);
+        }
+        const vb = orig.split(/\s+/).map(Number);
+        if (vb.length !== 4) return;
+        const [x, y, w, h] = vb;
+        let xMin = x, yMin = y, xMax = x + w, yMax = y + h;
+        partsByQname.forEach((p) => {
+          if (!p.currentDx) return;
+          [p.lifelineG, p.headG, p.tailG, ...p.activationRects].forEach((g) => {
+            if (!g) return;
+            let b;
+            try { b = g.getBBox(); } catch { return; }
+            if (!b || b.width <= 0 || b.height <= 0) return;
+            const ex = b.x + p.currentDx;
+            if (ex < xMin) xMin = ex;
+            if (b.y < yMin) yMin = b.y;
+            if (ex + b.width > xMax) xMax = ex + b.width;
+            if (b.y + b.height > yMax) yMax = b.y + b.height;
+          });
+        });
+        const pad = 8;
+        xMin -= pad; yMin -= pad; xMax += pad; yMax += pad;
+        const nw = xMax - xMin, nh = yMax - yMin;
+        svg.setAttribute('viewBox', `${xMin} ${yMin} ${nw} ${nh}`);
+        svg.setAttribute('width', `${nw}px`);
+        svg.setAttribute('height', `${nh}px`);
+        const style = (svg.getAttribute('style') || '')
+          .replace(/width\s*:[^;]+;?/g, '')
+          .replace(/height\s*:[^;]+;?/g, '');
+        if (style.trim()) svg.setAttribute('style', style); else svg.removeAttribute('style');
+        const par = svg.getAttribute('preserveAspectRatio');
+        if (!par || par === 'none') {
+          svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+        }
+      }
+
+      // Apply any saved layout up front so the diagram opens already in its
+      // last-edited shape.
+      partsByQname.forEach((p) => {
+        const meta = state.layout.participants[p.qname];
+        if (meta && typeof meta.dx === 'number') {
+          p.currentDx = meta.dx;
+          applyParticipantTransform(p);
+        }
+      });
+      applyMessageGeometry();
+      adjustViewBoxSequence();
+
+      // ---- Drag handlers ---------------------------------------------------
+      function startParticipantDrag(e, p) {
+        e.preventDefault();
+        e.stopPropagation();
+        const handle = e.currentTarget;
+        const pt = clientToSvg(e, svg);
+        state.draggingParticipant = {
+          p, handle,
+          originDx: p.currentDx || 0,
+          startX: pt.x,
+        };
+        handle.classList.add('pex-dragging');
+        try { handle.setPointerCapture(e.pointerId); } catch {}
+        handle.addEventListener('pointermove', onParticipantDrag);
+        handle.addEventListener('pointerup', endParticipantDrag);
+        handle.addEventListener('pointercancel', endParticipantDrag);
+      }
+      function onParticipantDrag(e) {
+        const d = state.draggingParticipant;
+        if (!d) return;
+        const pt = clientToSvg(e, svg);
+        const dx = Math.round(d.originDx + (pt.x - d.startX));
+        d.p.currentDx = dx;
+        if (dx !== 0) state.layout.participants[d.p.qname] = { dx };
+        else delete state.layout.participants[d.p.qname];
+        applyParticipantTransform(d.p);
+        applyMessageGeometry();
+        adjustViewBoxSequence();
+      }
+      function endParticipantDrag(e) {
+        const d = state.draggingParticipant;
+        if (!d) return;
+        d.handle.removeEventListener('pointermove', onParticipantDrag);
+        d.handle.removeEventListener('pointerup', endParticipantDrag);
+        d.handle.removeEventListener('pointercancel', endParticipantDrag);
+        d.handle.classList.remove('pex-dragging');
+        try { d.handle.releasePointerCapture(e.pointerId); } catch {}
+        state.draggingParticipant = null;
+        fire();
+      }
+
+      // Wire pointerdown on lifeline / head / tail for each participant.
+      // (Activation rects are NOT drag handles — they translate with the
+      // column but the user grabs the lifeline / head instead.)
+      const seqHandlers = []; // { g, fnDown, fnClick }
+      partsByQname.forEach((p) => {
+        [p.lifelineG, p.headG, p.tailG].forEach((g) => {
+          if (!g) return;
+          const fnDown = (e) => startParticipantDrag(e, p);
+          // click bubbles up after pointerup; nothing to do but avoid any
+          // future ancestor handler interpreting it as a deselect.
+          const fnClick = (e) => { e.stopPropagation(); };
+          g.addEventListener('pointerdown', fnDown);
+          g.addEventListener('click', fnClick);
+          seqHandlers.push({ g, fnDown, fnClick });
+        });
+      });
+
+      // ---- Draft restoration prompt (sequence variant) --------------------
+      let seqDraftPromptEl = null;
+      function showSeqDraftPrompt(draft) {
+        if (seqDraftPromptEl) return;
+        const ageMin = Math.max(1, Math.floor((Date.now() - (draft.ts || 0)) / 60000));
+        const el = doc.createElement('div');
+        el.className = 'pex-draft-prompt';
+        el.innerHTML =
+          `<span class="pex-draft-msg">저장되지 않은 레이아웃 변경이 있습니다 (~${ageMin}분 전).</span>`
+          + '<button class="primary" data-action="restore">복원</button>'
+          + '<button data-action="discard">무시</button>';
+        el.addEventListener('click', (ev) => {
+          const a = ev.target.closest('button[data-action]');
+          if (!a) return;
+          if (a.dataset.action === 'restore') {
+            const parsed = PexMeta && PexMeta.parseSource(draft.source);
+            if (parsed && parsed.meta && parsed.meta.layout) {
+              state.layout = normalizeLayout(parsed.meta.layout);
+              partsByQname.forEach((p) => {
+                const meta = state.layout.participants[p.qname];
+                p.currentDx = (meta && typeof meta.dx === 'number') ? meta.dx : 0;
+                applyParticipantTransform(p);
+              });
+              applyMessageGeometry();
+              adjustViewBoxSequence();
+              fire();
+            }
+          } else if (a.dataset.action === 'discard') {
+            clearDraft();
+          }
+          el.remove();
+          seqDraftPromptEl = null;
+        });
+        container.insertBefore(el, container.firstChild);
+        seqDraftPromptEl = el;
+      }
+      if (sourceHash) {
+        try {
+          const raw = win.localStorage.getItem(DRAFT_PREFIX + sourceHash);
+          if (raw) {
+            const draft = JSON.parse(raw);
+            if (draft && typeof draft.source === 'string' && draft.source !== initialSource) {
+              showSeqDraftPrompt(draft);
+            }
+          }
+        } catch {}
+      }
+
+      // ---- Public API (sequence) ------------------------------------------
+      return {
+        getLayout() { return state.layout; },
+        getSource() { return buildSource(); },
+        isDirty() { return state.dirty; },
+        setLayout(layout) {
+          state.layout = normalizeLayout(layout);
+          partsByQname.forEach((p) => {
+            const meta = state.layout.participants[p.qname];
+            p.currentDx = (meta && typeof meta.dx === 'number') ? meta.dx : 0;
+            applyParticipantTransform(p);
+          });
+          applyMessageGeometry();
+          adjustViewBoxSequence();
+        },
+        markSaved() {
+          clearDraft();
+          setDirty(false);
+        },
+        deactivate() {
+          seqHandlers.forEach(({ g, fnDown, fnClick }) => {
+            g.removeEventListener('pointerdown', fnDown);
+            g.removeEventListener('click', fnClick);
+          });
+          if (dirtyBadgeEl) dirtyBadgeEl.remove();
+          if (seqDraftPromptEl) seqDraftPromptEl.remove();
+          container.classList.remove('pex-inline-host');
+        },
+      };
+    }
+
+    // ===== Generic adapter (class / component / state / etc.) ===============
+    // Everything below here is the original g.entity / g.link wiring used by
+    // every diagram type that isn't intercepted above.
 
     // ---- ViewBox bookkeeping -----------------------------------------------
     function adjustViewBox() {
