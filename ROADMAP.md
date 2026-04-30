@@ -31,9 +31,9 @@
 
 ## E. 기능 보강 (장기)
 
-- [ ] **E-0** 컨테이너(rectangle/package/node 등) 자동 리사이즈 — 내부 엔티티가 드래그로 이동하면 감싸는 컨테이너 크기가 그에 맞게 자동 조정. 현재는 컨테이너가 고정 크기라 내부 요소가 밖으로 나가거나 빈 공간이 생김. 부모-자식 관계는 SVG 의 nested `g.entity` 또는 PlantUML source 에서 추출.
-- [ ] **E-1** Multi-select / group move
-- [ ] **E-2** Qualified-name 변경 시 layout 마이그레이션 — 소스에서 엔티티 rename 시 메타의 `nodes`/`edges` 키도 따라 갱신. 미구현 시 dx/dy 와 곡선 anchor 가 조용히 손실됨. 접근 후보: (a) 명시적 `pumlex: Rename entity in layout` 명령, (b) PlantUML alias (`A as B`) 활용, (c) 구조 heuristic (위험).
+- [x] **E-0** 컨테이너(rectangle/package/node 등) 자동 리사이즈 — 클라이언트 (`resizeContainers` in pex-inline) + 서버 (`applyLayout` 의 cluster resize) 양쪽에서 g.cluster 를 deepest-first 로 자식 translated bbox 의 union 으로 확장 + PlantUML 원본 padding 보존. 재편집 시 전이 누적 방지 위해 padding 스냅샷을 transform-aware 로 계산. 커밋 `345a549 / 067a3d8 / 183fe58`.
+- [x] **E-1** Multi-select / group move — `state.selectedSet` (Set) + `state.selected` (drag anchor). 평소 클릭은 selection replace, Shift+클릭으로 toggle. startDrag 가 멤버별 originDx/Dy 스냅샷 후 동일 오프셋으로 그룹 이동, applyEdgeFollow + resizeContainers 한 번에 따라옴. 커밋 `4dfe0f5`.
+- [x] **E-2** Qualified-name 변경 시 layout 마이그레이션 — `PexMeta.migrateRenamedKeys` 가 1:1 또는 substring overlap 으로 단일 orphan 을 fresh qname 에 재할당, 엣지 키도 동시 마이그레이션. 서버는 applyLayout 직전, 클라이언트는 activate 시점에 호출 (호출 후 fire() 로 정리된 메타가 다음 commit 에 재기록). 모호한 케이스는 보존 (UX prompt 후속). 커밋 `7dc8310`.
 - [ ] ~~**E-3** plantumlEx 측 저장된 다이어그램 list / 검색 페이지~~ — **보류** (2026-04-30, 모노레포 전환으로 우선순위 낮아짐).
 - [x] **E-3.5** 엣지 부속 텍스트 (multiplicity, qualifier, role 등) 개별 이동 — Ctrl/Cmd + 드래그. 라벨은 라인 자동 추종 + 사용자 오프셋 둘 다 살아남는 방식 (`applyEdgeFollow` 의 텍스트 투영 끝에 `edgeOverride.texts[idx].dx/dy` 더함). 메타에 `edges[eKey].texts[i] = { dx, dy }` 형태로 저장.
 - [ ] **E-4** 시퀀스 / 활동 다이어그램 인라인 편집 지원 — 현재 `pex-inline.js` 는 SVG `g.entity` 만 드래그 대상으로 잡음. 시퀀스(`participant`/`message`/`lifeline`)는 participant 가로 재배치, 활동(class 없는 `rect`/`polygon`/`ellipse`)은 노드 단위 식별·이동. 각각 별도 layout 모델 필요.
@@ -64,3 +64,4 @@
 - 2026-04-30: **D-2** 완료 — `parseSource → embedMeta → parseSource` round-trip 으로 메타 자동 추가 정상 동작 확인. 코드 변경 없음, README caveat 만 정리.
 - 2026-04-30: **edge selection 버그 수정** — `showEdgeToolbar` 강제 reflow + `ensureHandleLayer` z-order 방어 + onReposition 에 renderHandles 추가. 라인 선택 시 toolbar / 핸들이 스크롤 전까지 안 보이던 문제 해결.
 - 2026-04-30: **E-3.5** 완료 — Ctrl/Cmd + 드래그로 엣지 부속 텍스트 (multiplicity 등) 개별 이동. `state.draggingText` 추가, applyEdgeFollow 텍스트 투영에 per-text offset, g.link text 별 pointerdown / click 핸들러.
+- 2026-04-30: ROADMAP 동기화 — **E-0 / E-1 / E-2** 가 이전 세션에 구현 완료된 것을 체크박스에 반영. 커밋 hash + 핵심 메커니즘 요약 추가.
