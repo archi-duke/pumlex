@@ -26,7 +26,7 @@
 
 ## D. UX 다듬기  ★
 
-- [ ] **D-1** 큰 다이어그램 첫 로딩 placeholder 시간 측정 + 필요 시 progress 인디케이터
+- [x] **D-1** 큰 다이어그램 placeholder progress 인디케이터 — placeholder 에 SVG `<animateTransform>` spinner + elapsed time tspan 추가. `inFlight` 를 `Set<string>` → `Map<string, number>` 로 바꿔 source hash 별 startTime 을 보존 (120ms refresh 마다 재렌더 되어도 같은 시작 시간 유지). preview.js 가 250ms 마다 elapsed 갱신.
 - [ ] **D-2** 메타 없는 블록 처음 편집 시 메타 자동 추가 흐름 검증
 
 ## E. 기능 보강 (장기)
@@ -59,3 +59,4 @@
 - 2026-04-30: **C-3** 완료 — serverUrl 캡처 버그 수정. `extension.ts` 의 `pluginOpts` 객체 reference 를 유지하고 config 변경 시 in-place 로 갱신.
 - 2026-04-30: **B-1** 완료 — `pumlex.fenceMatching` 설정 + marker 모드 (info 토큰 OR 메타 sticky). info 토크나이즈로 첫 단어만 lang 판정 → ` ```plantuml pumlex ` 같은 fence 도 lang 매치. fence rule 부수적으로 case-insensitive 동작 검증.
 - 2026-04-30: **B-2** 완료 (재정의) — MPE 통합 대신 호환성 매트릭스 안내로 스코프 변경. README 에 호환되는 인핸서 (mermaid / github-styles / mdmath / all-in-one) + MPE 병행 워크플로우 명시.
+- 2026-04-30: **D-1** 완료 — placeholder spinner + elapsed time. inFlight Set→Map 전환으로 startTime stable.

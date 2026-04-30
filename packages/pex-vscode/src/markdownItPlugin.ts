@@ -18,7 +18,10 @@ type CacheEntry =
   | { type: 'connection-error'; content: string; ts: number };  // plantumlEx server unreachable
 
 const cache = new Map<string, CacheEntry>();
-const inFlight = new Set<string>();
+// Track the timestamp (ms since epoch) when each in-flight fetch started, so
+// the loading placeholder can show a stable elapsed-time count even though
+// the preview re-renders every 120ms while waiting.
+const inFlight = new Map<string, number>();
 
 function hashSource(s: string): string {
   return crypto.createHash('sha256').update(s).digest('hex').slice(0, 16);
@@ -32,10 +35,23 @@ function escapeAttr(s: string): string {
     .replace(/>/g, '&gt;');
 }
 
+// Placeholder shown while a fetch is in flight. The spinner is pure SVG
+// (animateTransform) so it animates without preview.js — useful in the
+// brief window before the webview script has bound. preview.js then
+// updates the .pumlex-elapsed tspan from the wrapping block's
+// data-pumlex-loading-start attribute, so the elapsed counter survives
+// the 120ms refresh loop.
 function placeholderSvg(): string {
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="40" viewBox="0 0 200 40">`
-    + `<rect width="200" height="40" fill="#f6f8fa" stroke="#d0d7de"/>`
-    + `<text x="100" y="24" text-anchor="middle" font-family="system-ui" font-size="12" fill="#666">렌더링 중…</text>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="260" height="40" viewBox="0 0 260 40">`
+    + `<rect width="260" height="40" fill="#f6f8fa" stroke="#d0d7de"/>`
+    + `<g>`
+    + `<circle cx="20" cy="20" r="8" fill="none" stroke="#9ca3af" stroke-width="2" stroke-dasharray="6 6">`
+    + `<animateTransform attributeName="transform" type="rotate" from="0 20 20" to="360 20 20" dur="1s" repeatCount="indefinite"/>`
+    + `</circle>`
+    + `</g>`
+    + `<text x="40" y="24" font-family="system-ui" font-size="12" fill="#666">`
+    + `렌더링 중… <tspan class="pumlex-elapsed">0.0s</tspan>`
+    + `</text>`
     + `</svg>`;
 }
 
@@ -174,7 +190,7 @@ export function createMarkdownItPlugin(opts: PluginOptions) {
         }
 
         if (!inFlight.has(hash)) {
-          inFlight.add(hash);
+          inFlight.set(hash, Date.now());
           fetchSvg(opts.serverUrl, source)
             .then((svg) => {
               cache.set(hash, { type: 'svg', content: svg, ts: Date.now() });
@@ -192,7 +208,8 @@ export function createMarkdownItPlugin(opts: PluginOptions) {
               try { opts.onCacheUpdate(); } catch { /* ignore */ }
             });
         }
-        return `<div class="pumlex-block pumlex-loading"${dataAttrs}>${placeholderSvg()}</div>`;
+        const loadingStart = inFlight.get(hash) ?? Date.now();
+        return `<div class="pumlex-block pumlex-loading"${dataAttrs} data-pumlex-loading-start="${loadingStart}">${placeholderSvg()}</div>`;
       } catch (e) {
         console.error('pumlex fence rule error', e);
         return fallbackFence(tokens, idx, options, env, slf);

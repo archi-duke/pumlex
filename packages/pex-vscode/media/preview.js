@@ -133,10 +133,29 @@
     document.querySelectorAll('.pumlex-block').forEach(decorateBlock);
   }
 
+  // Update the elapsed-time tspan inside each loading placeholder. Reads the
+  // start ms from the wrapping block's data-pumlex-loading-start (set by the
+  // markdown-it plugin from the inFlight map). The placeholder SVG itself
+  // shows a static "0.0s" until this runs — and survives preview re-renders
+  // because the start time is keyed by source hash on the extension side.
+  function updateLoadingTimers() {
+    const blocks = document.querySelectorAll('.pumlex-loading');
+    if (!blocks.length) return;
+    const now = Date.now();
+    blocks.forEach((el) => {
+      const start = parseInt(el.dataset.pumlexLoadingStart || '0', 10);
+      if (!start) return;
+      const tspan = el.querySelector('.pumlex-elapsed');
+      if (!tspan) return;
+      tspan.textContent = ((now - start) / 1000).toFixed(1) + 's';
+    });
+  }
+
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', scan);
   } else {
     scan();
   }
   new MutationObserver(scan).observe(document.body, { childList: true, subtree: true });
+  setInterval(updateLoadingTimers, 250);
 })();
