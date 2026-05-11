@@ -2,15 +2,25 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "type": "npm",
-      "script": "compile",
+      "label": "npm: compile",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "compile"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
       "group": "build",
       "presentation": { "reveal": "silent" },
       "problemMatcher": ["$tsc"]
     },
     {
-      "type": "npm",
-      "script": "watch",
+      "label": "npm: watch",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "watch"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
       "group": "build",
       "isBackground": true,
       "presentation": { "reveal": "silent" },

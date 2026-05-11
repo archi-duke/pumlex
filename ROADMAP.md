@@ -36,7 +36,7 @@
 - [x] **E-2** Qualified-name 변경 시 layout 마이그레이션 — `PexMeta.migrateRenamedKeys` 가 1:1 또는 substring overlap 으로 단일 orphan 을 fresh qname 에 재할당, 엣지 키도 동시 마이그레이션. 서버는 applyLayout 직전, 클라이언트는 activate 시점에 호출 (호출 후 fire() 로 정리된 메타가 다음 commit 에 재기록). 모호한 케이스는 보존 (UX prompt 후속). 커밋 `7dc8310`.
 - [ ] ~~**E-3** plantumlEx 측 저장된 다이어그램 list / 검색 페이지~~ — **보류** (2026-04-30, 모노레포 전환으로 우선순위 낮아짐).
 - [x] **E-3.5** 엣지 부속 텍스트 (multiplicity, qualifier, role 등) 개별 이동 — Ctrl/Cmd + 드래그. 라벨은 라인 자동 추종 + 사용자 오프셋 둘 다 살아남는 방식 (`applyEdgeFollow` 의 텍스트 투영 끝에 `edgeOverride.texts[idx].dx/dy` 더함). 메타에 `edges[eKey].texts[i] = { dx, dy }` 형태로 저장.
-- [ ] **E-4** 시퀀스 / 활동 다이어그램 인라인 편집 지원 — 현재 `pex-inline.js` 는 SVG `g.entity` 만 드래그 대상으로 잡음. 시퀀스(`participant`/`message`/`lifeline`)는 participant 가로 재배치, 활동(class 없는 `rect`/`polygon`/`ellipse`)은 노드 단위 식별·이동. 각각 별도 layout 모델 필요.
+- [~] **E-4** 시퀀스 / 활동 다이어그램 인라인 편집 지원 — **시퀀스 완료**, 활동은 후속. `pex-inline.js` 가 `data-diagram-type` 으로 분기, SEQUENCE 어댑터가 `g.participant-lifeline/head/tail` + `data-qualified-name` 기반 컬럼 인벤토리 + activation rect (`<title>` 매칭) 자동 동반 이동 + 메시지 line/polygon/text 좌표 재계산을 담당. 메타 스키마는 `layout.participants: { qname: { dx } }` 로 분리 (schema 2). 서버 `applyLayout` 도 동일하게 분기. 메시지 라벨 Ctrl+drag 미세조정은 의도적으로 스킵 (사용 빈도 낮음). 활동 다이어그램 / `box` 그룹 outline 자동 확장은 별도 항목으로 추적.
 
 ## F. 문서
 
@@ -65,3 +65,4 @@
 - 2026-04-30: **edge selection 버그 수정** — `showEdgeToolbar` 강제 reflow + `ensureHandleLayer` z-order 방어 + onReposition 에 renderHandles 추가. 라인 선택 시 toolbar / 핸들이 스크롤 전까지 안 보이던 문제 해결.
 - 2026-04-30: **E-3.5** 완료 — Ctrl/Cmd + 드래그로 엣지 부속 텍스트 (multiplicity 등) 개별 이동. `state.draggingText` 추가, applyEdgeFollow 텍스트 투영에 per-text offset, g.link text 별 pointerdown / click 핸들러.
 - 2026-04-30: ROADMAP 동기화 — **E-0 / E-1 / E-2** 가 이전 세션에 구현 완료된 것을 체크박스에 반영. 커밋 hash + 핵심 메커니즘 요약 추가.
+- 2026-04-30: **E-4 (시퀀스)** 완료 — `pex-inline.js` 의 `activate` 입구에서 `data-diagram-type="SEQUENCE"` 분기, 별도 어댑터가 `g.participant-lifeline/head/tail` + 같은 qname 의 activation rect (`<title>` 매칭) 를 묶어 X 드래그. 메시지 line 의 양 끝은 각자 자기 participant 의 dx, 화살촉 polygon 은 destination 의 dx, 라벨 text 는 line 위 위치에 따라 lerp. layout 메타에 `participants` 키 추가 (schema 2), 양쪽 `normalizeLayout` 보존. `server.js` `applyLayout` 에 동일 분기 추가해 `/render-with-layout` 로 받은 정적 SVG 도 일치. 메시지 라벨 Ctrl+drag 는 의도적으로 스킵 (사용 빈도 낮음). 활동 다이어그램 / `box` 그룹 outline 동기 확장은 후속.

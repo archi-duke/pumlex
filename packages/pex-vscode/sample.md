@@ -26,7 +26,7 @@ Order "*" --> "*" Product
 '   "layout": {
 '     "nodes": {
 '       "Order": {
-'         "dx": 266,
+'         "dx": 239,
 '         "dy": 1
 '       }
 '     },
@@ -40,6 +40,12 @@ Order "*" --> "*" Product
 '         "u1": {
 '           "x": -68.69726470280636,
 '           "y": 9.860203842849629
+'         },
+'         "texts": {
+'           "0": {
+'             "dx": 48,
+'             "dy": -7
+'           }
 '         }
 '       },
 '       "Customer__Order": {
@@ -49,8 +55,18 @@ Order "*" --> "*" Product
 '           "y": 2.595307463436086
 '         },
 '         "u1": {
-'           "x": 109.66627502441406,
-'           "y": 6.415127849936411
+'           "x": 106.83798217773438,
+'           "y": 22.053878046977474
+'         },
+'         "texts": {
+'           "0": {
+'             "dx": -35,
+'             "dy": -16
+'           },
+'           "1": {
+'             "dx": -7,
+'             "dy": -11
+'           }
 '         }
 '       }
 '     }
@@ -79,39 +95,28 @@ Admin --> UC2
 '   "layout": {
 '     "nodes": {
 '       "Admin": {
-'         "dx": 375,
-'         "dy": -7
+'         "dx": 370,
+'         "dy": -49
+'       },
+'       "System.UC2": {
+'         "dx": -80,
+'         "dy": -9
+'       },
+'       "System.UC1": {
+'         "dx": 50,
+'         "dy": 5
 '       }
 '     },
 '     "edges": {
 '       "Admin__System.UC2": {
 '         "type": "curve",
 '         "u2": {
-'           "x": -50.22406005859375,
-'           "y": 3.7730712890625
+'           "x": -82.13194274902344,
+'           "y": 13.872110702694606
 '         },
 '         "u1": {
-'           "x": -65.50314331054688,
-'           "y": 3.697214489706468
-'         },
-'         "endAnchor": {
-'           "side": "right",
-'           "t": 0.6021368444364396
-'         }
-'       },
-'       "Admin__System.UC1": {
-'         "type": "curve",
-'         "u2": {
-'           "x": -74.44454193115234,
-'           "y": -2.7033538818359375
-'         },
-'         "u1": {
-'           "x": -51.35821533203125,
-'           "y": 4.023026870987209
-'         },
-'         "endAnchor": {
-'           "side": "right",
-'           "t": 0.6717736059495666
+'           "x": -64.74630737304688,
+'           "y": -5.0785842981107905
 '         }
 '       }
 '     }
@@ -129,16 +134,45 @@ Admin --> UC2
 ```plantuml
 @startuml
 class Account {
-  +id: UUID
-  +balance: Decimal
+   id: UUID
+   balance: Decimal
 }
 class Transaction {
-  +id: UUID
-  +amount: Decimal
-  +ts: Instant
+   id: UUID
+   amount: Decimal
+   ts: Instant
 }
 Account "1" --> "*" Transaction
 @enduml
+
+' @startmeta
+' {
+'   "schema": 1,
+'   "layout": {
+'     "nodes": {
+'       "Transaction": {
+'         "dx": 90,
+'         "dy": 9
+'       }
+'     },
+'     "edges": {
+'       "Account__Transaction": {
+'         "type": "curve",
+'         "texts": {
+'           "0": {
+'             "dx": -18,
+'             "dy": -12
+'           },
+'           "1": {
+'             "dx": 7,
+'             "dy": -12
+'           }
+'         }
+'       }
+'     }
+'   }
+' }
+' @endmeta
 ```
 
 ## 컴포넌트 다이어그램
@@ -166,6 +200,106 @@ Loading --> Error : fail
 Ready --> [*]
 Error --> Idle : retry
 @enduml
+
+' @startmeta
+' {
+'   "schema": 2,
+'   "layout": {
+'     "nodes": {
+'       "Idle": {
+'         "dx": -23,
+'         "dy": -10
+'       }
+'     },
+'     "edges": {
+'       "Idle__Loading": {
+'         "type": "curve",
+'         "u2": {
+'           "x": 16.825212576093463,
+'           "y": 41.932464599609375
+'         },
+'         "u1": {
+'           "x": -20.817190072832318,
+'           "y": 26.661834716796875
+'         },
+'         "texts": {
+'           "0": {
+'             "dx": -61,
+'             "dy": 8
+'           }
+'         }
+'       },
+'       "Error__Idle": {
+'         "type": "curve",
+'         "texts": {
+'           "0": {
+'             "dx": 12,
+'             "dy": -10
+'           }
+'         }
+'       },
+'       "Loading__Ready": {
+'         "type": "straight",
+'         "texts": {
+'           "0": {
+'             "dx": -25,
+'             "dy": -4
+'           }
+'         }
+'       }
+'     },
+'     "participants": {}
+'   }
+' }
+' @endmeta
+```
+
+## 시퀀스 다이어그램 (E-4 PR1)
+
+participant 의 lifeline / head / tail 중 어느 곳을 가로로 드래그하면 컬럼 전체가 이동하고 메시지의 line / 화살촉 / 라벨 좌표도 같이 갱신됩니다.
+
+```plantuml
+@startuml
+actor User
+participant "Web App" as Web
+participant "API" as Api
+database DB
+
+User -> Web : login(id, pw)
+activate Web
+Web -> Api : POST /auth
+activate Api
+Api -> DB : SELECT user
+DB --> Api : row
+Api --> Web : token
+deactivate Api
+Web --> User : OK
+deactivate Web
+@enduml
+
+' @startmeta
+' {
+'   "schema": 2,
+'   "layout": {
+'     "nodes": {},
+'     "edges": {},
+'     "participants": {
+'       "DB": {
+'         "dx": 69
+'       },
+'       "Api": {
+'         "dx": 72
+'       },
+'       "Web": {
+'         "dx": 48
+'       },
+'       "User": {
+'         "dx": 17
+'       }
+'     }
+'   }
+' }
+' @endmeta
 ```
 
 ## 일반 코드 블록 (변형 안 됨)

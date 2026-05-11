@@ -7,7 +7,11 @@ const plantumlEncoder = require('plantuml-encoder');
 const PexGeom = require('@archi-duke/pex-core/geom');
 const PexMeta = require('@archi-duke/pex-core/meta');
 
-const META_SCHEMA = 1;
+// Schema 2 added `layout.participants` (sequence diagram participant column
+// dx). Schema 1 readers ignore unknown layout sub-keys gracefully — both
+// `inline.js` and `server.js` `normalizeLayout` preserve any of nodes / edges
+// / participants present, missing keys default to `{}`.
+const META_SCHEMA = 2;
 
 const app = express();
 app.use(express.json({ limit: '4mb' }));
@@ -52,17 +56,32 @@ async function renderSvg(source) {
 }
 
 function normalizeLayout(raw) {
-  if (!raw) return { nodes: {}, edges: {} };
-  if (raw.nodes !== undefined || raw.edges !== undefined) {
-    return { nodes: raw.nodes || {}, edges: raw.edges || {} };
+  if (!raw) return { nodes: {}, edges: {}, participants: {} };
+  if (raw.nodes !== undefined || raw.edges !== undefined || raw.participants !== undefined) {
+    return {
+      nodes: raw.nodes || {},
+      edges: raw.edges || {},
+      participants: raw.participants || {},
+    };
   }
-  return { nodes: raw, edges: {} };
+  return { nodes: raw, edges: {}, participants: {} };
 }
 
 function applyLayout(svg, rawLayout) {
   const layout = normalizeLayout(rawLayout);
-  if (Object.keys(layout.nodes).length === 0 && Object.keys(layout.edges).length === 0) return svg;
+  if (Object.keys(layout.nodes).length === 0
+      && Object.keys(layout.edges).length === 0
+      && Object.keys(layout.participants).length === 0) return svg;
   const $ = cheerio.load(svg, { xmlMode: true });
+
+  // Sequence diagrams have completely different markup (no g.entity / g.link —
+  // g.participant-* + g.message instead). Dispatch to a separate helper that
+  // mirrors the client-side `activateSequence` adapter in pex-core/inline.js.
+  const diagramType = $('svg').first().attr('data-diagram-type');
+  if (diagramType === 'SEQUENCE') {
+    applyLayoutSequence($, layout);
+    return $.xml();
+  }
 
   // Build qname ↔ id maps so PlantUML's auto-generated `ent00XX` ids can shift
   // freely as the source is edited without invalidating saved layouts.
@@ -366,6 +385,222 @@ function expandViewBox($, layout) {
   // Force uniform scaling so the diagram never squishes when CSS caps width.
   const par = svg.attr('preserveAspectRatio');
   if (!par || par === 'none') svg.attr('preserveAspectRatio', 'xMidYMid meet');
+}
+
+// ---- Sequence diagram layout (mirror of pex-core/inline.js activateSequence)
+// Translates each participant column by its saved dx (X-only — sequence Y is
+// driven by message order in source, not draggable) and recomputes every
+// message's <line>/<polygon>/<text> coords from the participants' deltas.
+// Kept structurally parallel to the client adapter so any future tweak to
+// participant geometry can be ported in one obvious place.
+function applyLayoutSequence($, layout) {
+  const participants = layout.participants || {};
+  if (!Object.keys(participants).length) return;
+
+  const partsByQname = {};
+  const uidToQname = {};
+  function getOrCreate(q) {
+    let p = partsByQname[q];
+    if (!p) {
+      p = partsByQname[q] = {
+        qname: q, lifelineG: null, headG: null, tailG: null,
+        activationRects: [], origCenter: null, currentDx: 0,
+      };
+    }
+    return p;
+  }
+  $('g.participant-lifeline').each((_, el) => {
+    const $el = $(el);
+    const q = $el.attr('data-qualified-name');
+    const uid = $el.attr('data-entity-uid');
+    if (!q) return;
+    if (uid) uidToQname[uid] = q;
+    getOrCreate(q).lifelineG = $el;
+  });
+  $('g.participant-head').each((_, el) => {
+    const $el = $(el);
+    const q = $el.attr('data-qualified-name');
+    if (q) getOrCreate(q).headG = $el;
+  });
+  $('g.participant-tail').each((_, el) => {
+    const $el = $(el);
+    const q = $el.attr('data-qualified-name');
+    if (q) getOrCreate(q).tailG = $el;
+  });
+
+  // Display name (e.g. "Web App") -> qname (e.g. "Web") so we can attribute
+  // activation rects (which only carry the display name in <title>) to their
+  // owning column.
+  const displayToQname = {};
+  for (const q of Object.keys(partsByQname)) {
+    const p = partsByQname[q];
+    let display = q;
+    if (p.lifelineG) {
+      const $t = p.lifelineG.find('title').first();
+      if ($t.length) display = $t.text().trim() || q;
+    }
+    displayToQname[display] = q;
+  }
+
+  // Activation rects: top-level <g> children of svg's outer <g> with no class
+  // and a single <title>+<rect> shape signature.
+  const $mainG = $('svg > g').first();
+  if ($mainG.length) {
+    $mainG.children('g').each((_, el) => {
+      const $el = $(el);
+      if ($el.attr('class')) return;
+      const $first = $el.children().first();
+      if (!$first.length || ($first[0].tagName || $first[0].name || '').toLowerCase() !== 'title') return;
+      const display = $first.text().trim();
+      const q = displayToQname[display];
+      if (q && partsByQname[q]) partsByQname[q].activationRects.push($el);
+    });
+  }
+
+  // Snapshot original column-center x (must be read BEFORE applying transforms).
+  function getOrigCenter(p) {
+    if (p.origCenter !== null) return p.origCenter;
+    let center = 0;
+    if (p.lifelineG) {
+      const $line = p.lifelineG.find('line').first();
+      if ($line.length) {
+        center = parseFloat($line.attr('x1'));
+      } else {
+        const $rect = p.lifelineG.find('rect').first();
+        if ($rect.length) {
+          center = parseFloat($rect.attr('x')) + parseFloat($rect.attr('width')) / 2;
+        }
+      }
+    }
+    p.origCenter = center;
+    return center;
+  }
+  for (const q of Object.keys(partsByQname)) getOrigCenter(partsByQname[q]);
+
+  for (const q of Object.keys(partsByQname)) {
+    const meta = participants[q];
+    partsByQname[q].currentDx = (meta && typeof meta.dx === 'number') ? meta.dx : 0;
+  }
+
+  // Apply translate(dx, 0) to lifeline + head + tail + every activation rect.
+  for (const q of Object.keys(partsByQname)) {
+    const p = partsByQname[q];
+    if (!p.currentDx) continue;
+    const t = `translate(${p.currentDx}, 0)`;
+    [p.lifelineG, p.headG, p.tailG, ...p.activationRects].forEach(($el) => {
+      if ($el && $el.length) $el.attr('transform', t);
+    });
+  }
+
+  // Recompute message geometry. Strategy mirrors pex-core/inline.js
+  // applyMessageGeometry — see that file for the per-rule reasoning.
+  $('g.message').each((_, el) => {
+    const $g = $(el);
+    const q1 = uidToQname[$g.attr('data-entity-1')];
+    const q2 = uidToQname[$g.attr('data-entity-2')];
+    if (!q1 || !q2) return;
+    const p1 = partsByQname[q1];
+    const p2 = partsByQname[q2];
+    if (!p1 || !p2) return;
+    const dx1 = p1.currentDx || 0;
+    const dx2 = p2.currentDx || 0;
+    const c1 = getOrigCenter(p1);
+    const c2 = getOrigCenter(p2);
+
+    const $line = $g.find('line').first();
+    let ox1 = null, ox2 = null;
+    if ($line.length) {
+      let s1 = $line.attr('data-pex-orig-x1');
+      let s2 = $line.attr('data-pex-orig-x2');
+      if (s1 === undefined || s1 === null) {
+        s1 = $line.attr('x1');
+        s2 = $line.attr('x2');
+        $line.attr('data-pex-orig-x1', s1);
+        $line.attr('data-pex-orig-x2', s2);
+      }
+      ox1 = parseFloat(s1);
+      ox2 = parseFloat(s2);
+      const x1IsQ1 = Math.abs(ox1 - c1) <= Math.abs(ox1 - c2);
+      const x1Dx = x1IsQ1 ? dx1 : dx2;
+      const x2Dx = x1IsQ1 ? dx2 : dx1;
+      $line.attr('x1', String(ox1 + x1Dx));
+      $line.attr('x2', String(ox2 + x2Dx));
+    }
+
+    $g.find('polygon').each((__, p) => {
+      const $poly = $(p);
+      let opts = $poly.attr('data-pex-orig-points');
+      if (opts === undefined || opts === null) {
+        opts = $poly.attr('points');
+        $poly.attr('data-pex-orig-points', opts);
+      }
+      const nums = opts.trim().split(/[\s,]+/).filter((s) => s.length).map(parseFloat);
+      let cx = 0, n = 0;
+      for (let i = 0; i + 1 < nums.length; i += 2) { cx += nums[i]; n++; }
+      cx = n ? cx / n : 0;
+      const arrowDx = Math.abs(cx - c1) <= Math.abs(cx - c2) ? dx1 : dx2;
+      const out = [];
+      for (let i = 0; i + 1 < nums.length; i += 2) {
+        out.push(`${nums[i] + arrowDx},${nums[i + 1]}`);
+      }
+      $poly.attr('points', out.join(' '));
+    });
+
+    if ($line.length && ox1 !== null) {
+      const span = ox2 - ox1;
+      $g.find('text').each((__, t) => {
+        const $t = $(t);
+        let s = $t.attr('data-pex-orig-x');
+        if (s === undefined || s === null) {
+          s = $t.attr('x');
+          $t.attr('data-pex-orig-x', s);
+        }
+        const ox = parseFloat(s);
+        const tp = (Math.abs(span) > 0.001) ? Math.max(0, Math.min(1, (ox - ox1) / span)) : 0.5;
+        const x1IsQ1 = Math.abs(ox1 - c1) <= Math.abs(ox1 - c2);
+        const startDx = x1IsQ1 ? dx1 : dx2;
+        const endDx   = x1IsQ1 ? dx2 : dx1;
+        const labelDx = startDx + tp * (endDx - startDx);
+        $t.attr('x', String(ox + labelDx));
+      });
+    }
+  });
+
+  expandViewBoxSequence($, partsByQname);
+}
+
+function expandViewBoxSequence($, partsByQname) {
+  const $svg = $('svg').first();
+  const vb = ($svg.attr('viewBox') || '').split(/\s+/).map(Number);
+  if (vb.length !== 4) return;
+  const [x, y, w, h] = vb;
+  let xMin = x, yMin = y, xMax = x + w, yMax = y + h;
+  for (const q of Object.keys(partsByQname)) {
+    const p = partsByQname[q];
+    if (!p.currentDx) continue;
+    [p.lifelineG, p.headG, p.tailG, ...p.activationRects].forEach(($el) => {
+      if (!$el || !$el.length) return;
+      const b = entityBBox($, $el);
+      if (!b) return;
+      const ex = b.x + p.currentDx;
+      if (ex < xMin) xMin = ex;
+      if (b.y < yMin) yMin = b.y;
+      if (ex + b.w > xMax) xMax = ex + b.w;
+      if (b.y + b.h > yMax) yMax = b.y + b.h;
+    });
+  }
+  const pad = 8;
+  xMin -= pad; yMin -= pad; xMax += pad; yMax += pad;
+  const nw = xMax - xMin, nh = yMax - yMin;
+  $svg.attr('viewBox', `${xMin} ${yMin} ${nw} ${nh}`);
+  $svg.attr('width', `${nw}px`);
+  $svg.attr('height', `${nh}px`);
+  const style = ($svg.attr('style') || '')
+    .replace(/width\s*:[^;]+;?/g, '')
+    .replace(/height\s*:[^;]+;?/g, '');
+  if (style.trim()) $svg.attr('style', style); else $svg.removeAttr('style');
+  const par = $svg.attr('preserveAspectRatio');
+  if (!par || par === 'none') $svg.attr('preserveAspectRatio', 'xMidYMid meet');
 }
 
 function cssEscape(s) {
