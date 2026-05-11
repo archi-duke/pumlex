@@ -55,6 +55,18 @@
       fill: #2563eb !important;
       font-weight: bold;
     }
+    .pex-inline-host text.pex-selectable { cursor: pointer; }
+    .pex-inline-host text.pex-text-selected {
+      fill: #ef4444 !important;
+      font-weight: bold;
+    }
+    .pex-marquee {
+      fill: rgba(37, 99, 235, 0.08);
+      stroke: #2563eb;
+      stroke-width: 1;
+      stroke-dasharray: 4 3;
+      pointer-events: none;
+    }
     /* Sequence diagram — participant columns are draggable horizontally.
        Lifeline / head / tail share the same x and translate together. */
     .pex-inline-host g.participant-lifeline,
@@ -197,17 +209,22 @@
     const state = {
       layout: normalizeLayout(opts.layout || metaLayout || null),
       dirty: false,
-      // Multi-select: selectedSet holds all currently-selected entities.
-      // `selected` mirrors the most-recently-added member (used as the
-      // primary anchor for drags and the legacy single-select callsites).
+      // Unified multi-select: selectedSet holds any selectable element —
+      // g.entity (node), g.link (edge), or <text> (label/title). `selected`
+      // mirrors the most-recently-added member (used as the primary anchor
+      // for drags and as the focus for single-target UI like the edge
+      // toolbar / curve handles, which only show when the selection is
+      // exactly one edge — see singleSelectedEdge()).
       selected: null,
       selectedSet: new Set(),
-      selectedEdge: null,
       dragging: null,
       draggingHandle: null,
       draggingText: null,
       // Sequence-only: in-progress participant column drag.
       draggingParticipant: null,
+      // Marquee (rubber-band) drag state. Set on background pointerdown,
+      // cleared on pointerup. While non-null, pointermove updates the rect.
+      marquee: null,
       // user-applied offset for the floating edge toolbar (per selection,
       // resets when a different edge is selected so each selection starts
       // from the auto-positioned spot near the path midpoint)
@@ -486,36 +503,17 @@
         });
       }
 
-      // Sequence-flavoured viewBox adjust: extend bounds to enclose every
-      // translated participant element. (The generic adjustViewBox iterates
-      // g.entity which doesn't exist here.)
+      // Sequence viewBox adjust: take the live SVG bbox so column drags
+      // shrink AND grow the canvas. Identical to the generic path; kept
+      // separate only because this branch runs before the generic helpers
+      // are defined.
       function adjustViewBoxSequence() {
-        let orig = svg.getAttribute('data-pex-original-viewbox');
-        if (!orig) {
-          orig = svg.getAttribute('viewBox') || '';
-          svg.setAttribute('data-pex-original-viewbox', orig);
-        }
-        const vb = orig.split(/\s+/).map(Number);
-        if (vb.length !== 4) return;
-        const [x, y, w, h] = vb;
-        let xMin = x, yMin = y, xMax = x + w, yMax = y + h;
-        partsByQname.forEach((p) => {
-          if (!p.currentDx) return;
-          [p.lifelineG, p.headG, p.tailG, ...p.activationRects].forEach((g) => {
-            if (!g) return;
-            let b;
-            try { b = g.getBBox(); } catch { return; }
-            if (!b || b.width <= 0 || b.height <= 0) return;
-            const ex = b.x + p.currentDx;
-            if (ex < xMin) xMin = ex;
-            if (b.y < yMin) yMin = b.y;
-            if (ex + b.width > xMax) xMax = ex + b.width;
-            if (b.y + b.height > yMax) yMax = b.y + b.height;
-          });
-        });
-        const pad = 8;
-        xMin -= pad; yMin -= pad; xMax += pad; yMax += pad;
-        const nw = xMax - xMin, nh = yMax - yMin;
+        let bbox;
+        try { bbox = svg.getBBox(); } catch { bbox = null; }
+        if (!bbox || bbox.width <= 0 || bbox.height <= 0) return;
+        const pad = 10;
+        const xMin = bbox.x - pad, yMin = bbox.y - pad;
+        const nw = bbox.width + pad * 2, nh = bbox.height + pad * 2;
         svg.setAttribute('viewBox', `${xMin} ${yMin} ${nw} ${nh}`);
         svg.setAttribute('width', `${nw}px`);
         svg.setAttribute('height', `${nh}px`);
@@ -683,37 +681,43 @@
     // every diagram type that isn't intercepted above.
 
     // ---- ViewBox bookkeeping -----------------------------------------------
-    function adjustViewBox() {
-      let orig = svg.getAttribute('data-pex-original-viewbox');
-      if (!orig) {
-        orig = svg.getAttribute('viewBox') || '';
-        svg.setAttribute('data-pex-original-viewbox', orig);
+    // Walk the SVG and compute the union bbox of actual diagram content,
+    // skipping our overlay layers. svg.getBBox() would do this in one call
+    // but also includes the handle layer + transient marquee rect, which
+    // would jitter the viewBox during interactions. Hide those, measure,
+    // restore.
+    function computeContentBBox() {
+      const overlay = svg.querySelector('g.pex-handle-layer');
+      const marquee = state.marquee && state.marquee.rect;
+      const overlayPrev = overlay ? overlay.getAttribute('display') : null;
+      const marqueePrev = marquee ? marquee.getAttribute('display') : null;
+      if (overlay) overlay.setAttribute('display', 'none');
+      if (marquee) marquee.setAttribute('display', 'none');
+      let bbox;
+      try { bbox = svg.getBBox(); } catch { bbox = null; }
+      if (overlay) {
+        if (overlayPrev === null) overlay.removeAttribute('display');
+        else overlay.setAttribute('display', overlayPrev);
       }
-      const vb = orig.split(/\s+/).map(Number);
-      if (vb.length !== 4) return;
-      const [x, y, w, h] = vb;
-      // Compute the *exact* enclosing rect of the original viewBox plus
-      // every entity's post-translate bbox. The previous heuristic naively
-      // grew the viewBox by max|dx|/max|dy| which over-extended whenever
-      // the moved entity wasn't originally at the diagram's edge — leaving
-      // visible empty padding to one side after a layout edit.
-      let xMin = x, yMin = y, xMax = x + w, yMax = y + h;
-      svg.querySelectorAll('g.entity').forEach((g) => {
-        const q = entityQname(g);
-        const d = state.layout.nodes[q];
-        if (!d || (d.dx === 0 && d.dy === 0)) return;
-        let b;
-        try { b = g.getBBox(); } catch { return; }
-        if (!b) return;
-        const ex = b.x + d.dx, ey = b.y + d.dy;
-        if (ex < xMin) xMin = ex;
-        if (ey < yMin) yMin = ey;
-        if (ex + b.width > xMax) xMax = ex + b.width;
-        if (ey + b.height > yMax) yMax = ey + b.height;
-      });
-      const pad = 8;
-      xMin -= pad; yMin -= pad; xMax += pad; yMax += pad;
-      const nw = xMax - xMin, nh = yMax - yMin;
+      if (marquee) {
+        if (marqueePrev === null) marquee.removeAttribute('display');
+        else marquee.setAttribute('display', marqueePrev);
+      }
+      if (!bbox || bbox.width <= 0 || bbox.height <= 0) return null;
+      return bbox;
+    }
+
+    function adjustViewBox() {
+      // Recompute the viewBox from the live content bbox so the SVG always
+      // tracks what's actually drawn — both grows when a node is dragged
+      // outside the original bounds, AND shrinks when edits leave empty
+      // space. Excludes our transient overlays (handle layer, marquee) so
+      // they never inflate the size.
+      const bbox = computeContentBBox();
+      if (!bbox) return;
+      const pad = 10;
+      const xMin = bbox.x - pad, yMin = bbox.y - pad;
+      const nw = bbox.width + pad * 2, nh = bbox.height + pad * 2;
       svg.setAttribute('viewBox', `${xMin} ${yMin} ${nw} ${nh}`);
       // Width/height attributes act as the SVG's intrinsic size (used as the
       // fallback when the host doesn't constrain via CSS). We set them so the
@@ -886,7 +890,7 @@
       });
       resizeContainers();
       syncEdgeHitboxes();
-      if (state.selectedEdge) renderHandles();
+      if (singleSelectedEdge()) renderHandles();
     }
 
     // PlantUML clusters (rectangle/package/node) wrap their children but
@@ -1023,68 +1027,92 @@
     }
 
     // ---- Selection + handle layer ------------------------------------------
-    // selectNode / selectEdge are mutually exclusive: selecting a node clears
-    // any selected edge (and vice versa).
+    // Unified selection model: nodes, edges, and text labels live in one
+    // selectedSet. Single-target UI (edge toolbar, curve handles) is shown
+    // only when the selection is exactly one edge — singleSelectedEdge().
     //
-    // selectNode signatures:
-    //   selectNode(null)              clear all node selection
-    //   selectNode(g)                 replace selection with [g]
-    //   selectNode(g, { toggle })     toggle g in selection (Shift+click)
-    function selectNode(g, opts) {
+    // select signatures:
+    //   select(null)                 clear all
+    //   select(el)                   replace selection with [el]
+    //   select(el, { toggle: true }) toggle el (Shift+click)
+    //   select(el, { add: true })    add without removing others (marquee)
+    function selKind(el) {
+      if (!el || !el.classList) return null;
+      if (el.classList.contains('entity')) return 'node';
+      if (el.classList.contains('link')) return 'edge';
+      if (el.tagName && el.tagName.toLowerCase() === 'text') return 'text';
+      return null;
+    }
+    function selClass(kind) {
+      return kind === 'node' ? 'pex-selected'
+           : kind === 'edge' ? 'pex-edge-selected'
+           : kind === 'text' ? 'pex-text-selected'
+           : null;
+    }
+    function singleSelectedEdge() {
+      if (state.selectedSet.size !== 1) return null;
+      const el = state.selected;
+      return selKind(el) === 'edge' ? el : null;
+    }
+    function removeSelectionClass(el) {
+      const c = selClass(selKind(el));
+      if (c) el.classList.remove(c);
+    }
+    function addSelectionClass(el) {
+      const c = selClass(selKind(el));
+      if (c) el.classList.add(c);
+    }
+    function select(el, opts) {
       opts = opts || {};
-      if (g === null) {
-        clearNodeSelection();
+      const prevEdge = singleSelectedEdge();
+      if (el === null) {
+        for (const prev of state.selectedSet) removeSelectionClass(prev);
+        state.selectedSet.clear();
+        state.selected = null;
+        refreshEdgeUI(prevEdge);
         return;
       }
+      if (!selKind(el)) return;
       if (opts.toggle) {
-        if (state.selectedSet.has(g)) {
-          state.selectedSet.delete(g);
-          g.classList.remove('pex-selected');
-          if (state.selected === g) {
-            // pick another member as new primary, or null if empty
-            const next = state.selectedSet.values().next().value || null;
-            state.selected = next || null;
+        if (state.selectedSet.has(el)) {
+          state.selectedSet.delete(el);
+          removeSelectionClass(el);
+          if (state.selected === el) {
+            state.selected = state.selectedSet.values().next().value || null;
           }
         } else {
-          state.selectedSet.add(g);
-          g.classList.add('pex-selected');
-          state.selected = g;
-          if (state.selectedEdge) clearEdgeSelection();
+          state.selectedSet.add(el);
+          addSelectionClass(el);
+          state.selected = el;
         }
-        return;
+      } else if (opts.add) {
+        if (!state.selectedSet.has(el)) {
+          state.selectedSet.add(el);
+          addSelectionClass(el);
+        }
+        state.selected = el;
+      } else {
+        for (const prev of state.selectedSet) {
+          if (prev !== el) removeSelectionClass(prev);
+        }
+        state.selectedSet.clear();
+        state.selectedSet.add(el);
+        addSelectionClass(el);
+        state.selected = el;
       }
-      // Plain select: replace current selection with just g
-      for (const prev of state.selectedSet) {
-        if (prev !== g) prev.classList.remove('pex-selected');
-      }
-      state.selectedSet.clear();
-      state.selectedSet.add(g);
-      state.selected = g;
-      g.classList.add('pex-selected');
-      if (state.selectedEdge) clearEdgeSelection();
+      refreshEdgeUI(prevEdge);
     }
-    function clearNodeSelection() {
-      for (const el of state.selectedSet) el.classList.remove('pex-selected');
-      state.selectedSet.clear();
-      state.selected = null;
-    }
-    function clearEdgeSelection() {
-      if (state.selectedEdge) state.selectedEdge.classList.remove('pex-edge-selected');
-      state.selectedEdge = null;
-      hideEdgeToolbar();
-      clearHandles();
-    }
-    function selectEdge(g) {
-      const sameEdge = state.selectedEdge === g;
-      if (state.selectedEdge && !sameEdge) state.selectedEdge.classList.remove('pex-edge-selected');
-      state.selectedEdge = g;
-      if (g) {
-        if (!sameEdge) state.toolbarOffset = { dx: 0, dy: 0 };
-        g.classList.add('pex-edge-selected');
-        if (state.selectedSet.size) clearNodeSelection();
-        const eKey = edgeKeyForLink(svg, g);
+    // Update edge-only UI (toolbar, handles, layout.edges auto-create)
+    // whenever the single-edge focus changes. `prevEdge` is the edge that
+    // had the focus before the mutation (for toolbar-offset reset detection).
+    function refreshEdgeUI(prevEdge) {
+      const cur = singleSelectedEdge();
+      if (cur) {
+        if (cur !== prevEdge) state.toolbarOffset = { dx: 0, dy: 0 };
+        const eKey = edgeKeyForLink(svg, cur);
         if (eKey && !state.layout.edges[eKey]) {
-          const pathD = g.querySelector('path:not(.pex-edge-hit)').getAttribute('data-pex-orig-d') || g.querySelector('path:not(.pex-edge-hit)').getAttribute('d') || '';
+          const pathEl = cur.querySelector('path:not(.pex-edge-hit)');
+          const pathD = pathEl ? (pathEl.getAttribute('data-pex-orig-d') || pathEl.getAttribute('d') || '') : '';
           const wasCurved = /[CQS]/i.test(pathD);
           state.layout.edges[eKey] = { type: wasCurved ? 'curve' : 'straight' };
         }
@@ -1123,7 +1151,7 @@
     }
     function renderHandles() {
       const layer = ensureHandleLayer();
-      const eg = state.selectedEdge;
+      const eg = singleSelectedEdge();
       if (!eg || !eg._pexBuilt) { layer.innerHTML = ''; return; }
       const built = eg._pexBuilt;
       const ensure = (selector, factory) => {
@@ -1233,7 +1261,7 @@
     });
 
     function showEdgeToolbar() {
-      const eg = state.selectedEdge;
+      const eg = singleSelectedEdge();
       if (!eg) { hideEdgeToolbar(); return; }
       const eKey = edgeKeyForLink(svg, eg);
       const ov = state.layout.edges[eKey];
@@ -1241,7 +1269,7 @@
       const curType = (ov && ov.type) || (wasCurved ? 'curve' : 'straight');
       tb.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.type === curType));
       // applyEdgeFollow may have just mutated the path's `d` attribute
-      // (selectEdge → applyEdgeFollow → setAttribute → showEdgeToolbar all
+      // (select(edge) → refreshEdgeUI → applyEdgeFollow → showEdgeToolbar all
       // run synchronously in one click handler). In some webview
       // environments getBBox / getScreenCTM / getBoundingClientRect can
       // still report the *previous* layout for one frame, which positions
@@ -1271,7 +1299,7 @@
     }
     function hideEdgeToolbar() { tb.classList.remove('shown'); }
     function setEdgeType(type) {
-      const eg = state.selectedEdge;
+      const eg = singleSelectedEdge();
       if (!eg) return;
       const eKey = edgeKeyForLink(svg, eg);
       if (!eKey) return;
@@ -1293,12 +1321,15 @@
       //  - g not in selection + Shift held → add g, then group drag
       //  - g not in selection + no Shift → replace selection with g, single drag
       if (!state.selectedSet.has(g)) {
-        selectNode(g, { toggle: !!e.shiftKey });
+        select(g, { toggle: !!e.shiftKey });
       }
       const pt = clientToSvg(e, svg);
-      // Snapshot each member's start delta so the group moves rigidly.
+      // Snapshot each NODE member's start delta so the group moves rigidly.
+      // Edges/text in the unified selection are not draggable here — they
+      // remain in selection but stay put while the user drags nodes.
       const members = [];
       for (const el of state.selectedSet) {
+        if (selKind(el) !== 'node') continue;
         const q = entityQname(el);
         const existing = state.layout.nodes[q] || { dx: 0, dy: 0 };
         members.push({ g: el, q, originDx: existing.dx, originDy: existing.dy });
@@ -1339,7 +1370,7 @@
     }
     function startHandleDrag(e, which) {
       e.stopPropagation(); e.preventDefault();
-      const eg = state.selectedEdge;
+      const eg = singleSelectedEdge();
       if (!eg) return;
       const eKey = edgeKeyForLink(svg, eg);
       if (!eKey) return;
@@ -1353,7 +1384,7 @@
     function onHandleDrag(e) {
       const h = state.draggingHandle;
       if (!h) return;
-      const eg = state.selectedEdge;
+      const eg = singleSelectedEdge();
       if (!eg || !eg._pexBuilt) return;
       const pt = clientToSvg(e, svg);
       const built = eg._pexBuilt;
@@ -1392,11 +1423,18 @@
       fire();
     }
 
-    // ---- Per-text drag (Ctrl/Cmd + drag on edge labels) -------------------
+    // ---- Per-text drag-or-select (edge labels) ----------------------------
     // Lets the user move auxiliary text on an edge — multiplicity ("0..*"),
     // qualifiers, role names — independently of the line. The offset rides
     // *on top of* the auto-projection in applyEdgeFollow, so the label still
     // follows the line as nodes move while the user's fine-tune is preserved.
+    //
+    // Pointerdown opens a "maybe drag" state; the first pointermove past a
+    // 2px threshold commits to a real drag, otherwise the gesture falls
+    // through to the click handler which selects the label. Holding Shift
+    // skips drag entirely so Shift+click can extend a multi-selection
+    // without any movement.
+    const TEXT_DRAG_THRESHOLD = 2;
     function ensureEdgeOverrideFor(linkG, eKey) {
       let ov = state.layout.edges[eKey];
       if (ov) return ov;
@@ -1407,52 +1445,202 @@
       return ov;
     }
     function startTextDrag(e, linkG, textEl, idx) {
-      const eKey = edgeKeyForLink(svg, linkG);
-      if (!eKey) return;
-      const ov = ensureEdgeOverrideFor(linkG, eKey);
-      ov.texts = ov.texts || {};
-      const existing = ov.texts[idx] || { dx: 0, dy: 0 };
-      const pt = clientToSvg(e, svg);
-      textEl.classList.add('pex-text-dragging');
+      const startPt = clientToSvg(e, svg);
       try { textEl.setPointerCapture(e.pointerId); } catch {}
       state.draggingText = {
-        textEl, idx, eKey,
-        startX: pt.x, startY: pt.y,
-        originDx: existing.dx, originDy: existing.dy,
+        textEl, idx, linkG,
+        startX: startPt.x, startY: startPt.y,
+        originDx: 0, originDy: 0,
+        committed: false, // true once threshold is exceeded
+        eKey: null,
+        pointerId: e.pointerId,
       };
       textEl.addEventListener('pointermove', onTextDrag);
       textEl.addEventListener('pointerup', endTextDrag);
       textEl.addEventListener('pointercancel', endTextDrag);
     }
+    function commitTextDrag(d) {
+      const eKey = edgeKeyForLink(svg, d.linkG);
+      if (!eKey) return false;
+      const ov = ensureEdgeOverrideFor(d.linkG, eKey);
+      ov.texts = ov.texts || {};
+      const existing = ov.texts[d.idx] || { dx: 0, dy: 0 };
+      d.eKey = eKey;
+      d.originDx = existing.dx;
+      d.originDy = existing.dy;
+      d.committed = true;
+      d.textEl.classList.add('pex-text-dragging');
+      return true;
+    }
     function onTextDrag(e) {
       const d = state.draggingText;
       if (!d) return;
       const pt = clientToSvg(e, svg);
-      const dx = Math.round(d.originDx + (pt.x - d.startX));
-      const dy = Math.round(d.originDy + (pt.y - d.startY));
+      const offX = pt.x - d.startX, offY = pt.y - d.startY;
+      if (!d.committed) {
+        if (Math.abs(offX) < TEXT_DRAG_THRESHOLD && Math.abs(offY) < TEXT_DRAG_THRESHOLD) return;
+        if (!commitTextDrag(d)) return;
+      }
       const ov = state.layout.edges[d.eKey];
       if (!ov) return;  // edge gone (e.g. SVG re-rendered) — abort
       ov.texts = ov.texts || {};
-      ov.texts[d.idx] = { dx, dy };
+      ov.texts[d.idx] = {
+        dx: Math.round(d.originDx + offX),
+        dy: Math.round(d.originDy + offY),
+      };
       applyEdgeFollow();
     }
     function endTextDrag(e) {
       const d = state.draggingText;
       if (!d) return;
-      d.textEl.classList.remove('pex-text-dragging');
       d.textEl.removeEventListener('pointermove', onTextDrag);
       d.textEl.removeEventListener('pointerup', endTextDrag);
       d.textEl.removeEventListener('pointercancel', endTextDrag);
       try { d.textEl.releasePointerCapture(e.pointerId); } catch {}
       state.draggingText = null;
-      fire();
+      if (d.committed) {
+        d.textEl.classList.remove('pex-text-dragging');
+        adjustViewBox();
+        fire();
+        // Swallow the trailing click so it doesn't also re-select.
+        const swallow = (ev) => {
+          ev.stopPropagation();
+          d.textEl.removeEventListener('click', swallow, true);
+        };
+        d.textEl.addEventListener('click', swallow, true);
+      }
+      // !committed → no movement happened; the upcoming click will select.
     }
 
     // ---- Wire SVG ----------------------------------------------------------
     const entityHandlers = []; // { g, fn } — for cleanup
     const linkHandlers = [];
     const textHandlers = [];   // { textEl, fnDown, fnClick }
-    const onSvgClick = () => { selectNode(null); selectEdge(null); };
+    const onSvgClick = () => { select(null); };
+
+    // ---- Marquee (rubber-band) selection -----------------------------------
+    // Drag from empty SVG background to capture every selectable element
+    // whose visual bounding box intersects the marquee rect. Holding Shift
+    // adds to the existing selection instead of replacing it.
+    //
+    // The marquee rect itself is rendered in SVG units so it scales with the
+    // diagram (keeps a constant 4px-style stroke under PlantUML's units).
+    // Hit-testing uses each candidate's getBoundingClientRect() — painted
+    // screen-space coordinates — which sidesteps having to compose nested
+    // transforms for entities, edges, and lifelines that all live under
+    // different coordinate systems.
+    const MARQUEE_THRESHOLD_PX = 4; // shorter drags are treated as a click
+    function startMarquee(e) {
+      e.preventDefault();
+      const startSvg = clientToSvg(e, svg);
+      const rect = doc.createElementNS(SVG_NS, 'rect');
+      rect.setAttribute('class', 'pex-marquee');
+      rect.setAttribute('x', startSvg.x);
+      rect.setAttribute('y', startSvg.y);
+      rect.setAttribute('width', 0);
+      rect.setAttribute('height', 0);
+      svg.appendChild(rect);
+      state.marquee = {
+        startSvg,
+        startClientX: e.clientX, startClientY: e.clientY,
+        curClientX: e.clientX, curClientY: e.clientY,
+        rect,
+        additive: !!e.shiftKey,
+        moved: false,
+        pointerId: e.pointerId,
+      };
+      try { svg.setPointerCapture(e.pointerId); } catch {}
+      svg.addEventListener('pointermove', onMarqueeMove);
+      svg.addEventListener('pointerup', endMarquee);
+      svg.addEventListener('pointercancel', endMarquee);
+    }
+    function onMarqueeMove(e) {
+      const m = state.marquee;
+      if (!m) return;
+      const pt = clientToSvg(e, svg);
+      const x = Math.min(m.startSvg.x, pt.x);
+      const y = Math.min(m.startSvg.y, pt.y);
+      const w = Math.abs(pt.x - m.startSvg.x);
+      const h = Math.abs(pt.y - m.startSvg.y);
+      m.rect.setAttribute('x', x);
+      m.rect.setAttribute('y', y);
+      m.rect.setAttribute('width', w);
+      m.rect.setAttribute('height', h);
+      m.curClientX = e.clientX;
+      m.curClientY = e.clientY;
+      if (Math.abs(e.clientX - m.startClientX) > MARQUEE_THRESHOLD_PX
+       || Math.abs(e.clientY - m.startClientY) > MARQUEE_THRESHOLD_PX) {
+        m.moved = true;
+      }
+    }
+    function endMarquee(e) {
+      const m = state.marquee;
+      if (!m) return;
+      svg.removeEventListener('pointermove', onMarqueeMove);
+      svg.removeEventListener('pointerup', endMarquee);
+      svg.removeEventListener('pointercancel', endMarquee);
+      try { svg.releasePointerCapture(m.pointerId); } catch {}
+      m.rect.remove();
+      state.marquee = null;
+      if (!m.moved) {
+        // Below threshold — treat as plain background click; the bubbled
+        // 'click' event that follows will fire onSvgClick → clear selection.
+        return;
+      }
+      const left = Math.min(m.startClientX, m.curClientX);
+      const top = Math.min(m.startClientY, m.curClientY);
+      const right = Math.max(m.startClientX, m.curClientX);
+      const bottom = Math.max(m.startClientY, m.curClientY);
+      applyMarqueeSelection({ left, top, right, bottom }, m.additive);
+      // The pointerup is followed by a synthetic 'click' on the SVG that
+      // would clear the just-built selection. Eat it once at capture phase.
+      const swallow = (ev) => {
+        ev.stopPropagation();
+        svg.removeEventListener('click', swallow, true);
+      };
+      svg.addEventListener('click', swallow, true);
+    }
+    function applyMarqueeSelection(marquee, additive) {
+      if (!additive) select(null);
+      const hit = (el) => {
+        let r;
+        try { r = el.getBoundingClientRect(); } catch { return false; }
+        if (!r || (r.width === 0 && r.height === 0)) return false;
+        return !(
+          r.right < marquee.left || r.left > marquee.right ||
+          r.bottom < marquee.top || r.top > marquee.bottom
+        );
+      };
+      svg.querySelectorAll('g.entity').forEach((g) => {
+        if (hit(g)) select(g, { add: true });
+      });
+      svg.querySelectorAll('g.link').forEach((g) => {
+        const path = g.querySelector('path:not(.pex-edge-hit)');
+        if (path && hit(path)) select(g, { add: true });
+      });
+      // Edge labels (g.link text) and standalone selectable text both
+      // participate. We rely on .pex-selectable as the marker for standalone
+      // text; edge labels are detected via the g.link ancestor.
+      svg.querySelectorAll('text').forEach((textEl) => {
+        const isEdgeLabel = !!textEl.closest('g.link');
+        const isStandaloneSelectable = textEl.classList.contains('pex-selectable');
+        if (!isEdgeLabel && !isStandaloneSelectable) return;
+        if (hit(textEl)) select(textEl, { add: true });
+      });
+    }
+    function onSvgPointerDown(e) {
+      if (e.button !== 0) return; // left button only
+      if (state.marquee) return;  // already in progress (shouldn't happen)
+      const t = e.target;
+      // Skip when pressing on anything that has its own pointerdown semantics:
+      // node drag, edge click, text label drag/select, curve handles/anchors.
+      if (t.closest && t.closest(
+        'g.entity, g.link, text, .pex-handle, .pex-anchor, ' +
+        'g.participant-head, g.participant-tail, g.participant-lifeline, g.message'
+      )) return;
+      startMarquee(e);
+    }
+    svg.addEventListener('pointerdown', onSvgPointerDown);
 
     // Reconcile saved meta keys with the current SVG's entity qnames before
     // wiring transforms. If the user renamed an entity in source, our saved
@@ -1491,48 +1679,76 @@
       entityHandlers.push({ g, fnDown, fnClick });
     });
     svg.querySelectorAll('g.link').forEach((linkG) => {
-      const fnClick = (e) => { e.stopPropagation(); selectEdge(linkG); };
+      const fnClick = (e) => {
+        e.stopPropagation();
+        select(linkG, { toggle: !!e.shiftKey });
+      };
       linkG.addEventListener('click', fnClick);
       linkHandlers.push({ g: linkG, fnClick });
 
-      // Per-text drag — only engages with Ctrl/Cmd held, otherwise the event
-      // bubbles up to the link's click handler and selects the whole edge.
+      // Edge label gesture: pointerdown opens a "maybe drag" state. If the
+      // pointer moves past TEXT_DRAG_THRESHOLD before pointerup, the label
+      // moves; otherwise the gesture falls through to a plain click which
+      // selects the label. Shift+click skips drag entirely so users can
+      // extend a multi-selection without nudging the label.
       linkG.querySelectorAll('text').forEach((textEl, tIdx) => {
         const fnDown = (e) => {
-          if (!(e.ctrlKey || e.metaKey)) return;
+          if (e.button !== 0) return;
+          if (e.shiftKey) return; // Shift+click is select-only
           e.preventDefault();
           e.stopPropagation();
           startTextDrag(e, linkG, textEl, tIdx);
         };
-        // After Ctrl-drag, the resulting click would still bubble to linkG
-        // and trigger edge selection. Swallow it so the gesture is purely
-        // "move this label" with no selection side-effect.
         const fnTextClick = (e) => {
-          if (e.ctrlKey || e.metaKey) e.stopPropagation();
-        };
-        // On macOS, Ctrl+click is the secondary-click gesture and fires the
-        // OS context menu, which would preempt our drag. Suppress it on edge
-        // labels — there's no useful default action for right-clicking a
-        // label in this editor anyway. Mac users can also use Cmd+drag,
-        // which doesn't trigger contextmenu at all.
-        const fnContextMenu = (e) => {
-          if (e.ctrlKey || e.metaKey) e.preventDefault();
+          // Always stop the click from bubbling to the link's edge-select
+          // handler. If we already swallowed it (after a real drag), this
+          // path won't run. Otherwise a plain click reaches here → select.
+          e.stopPropagation();
+          select(textEl, { toggle: !!e.shiftKey });
         };
         textEl.addEventListener('pointerdown', fnDown);
         textEl.addEventListener('click', fnTextClick);
-        textEl.addEventListener('contextmenu', fnContextMenu);
-        textHandlers.push({ textEl, fnDown, fnTextClick, fnContextMenu });
+        textHandlers.push({ textEl, fnDown, fnTextClick });
       });
+    });
+
+    // Standalone text — diagram titles, sequence note text, free-floating
+    // labels not living inside a draggable container. Make them selectable
+    // so users can highlight them with the same gestures as nodes/edges
+    // (click / Shift+click / marquee).
+    // Skip text inside g.entity / g.participant-* / g.message — those belong
+    // to the parent and clicks there should drive the parent's behavior.
+    // Text inside g.link is handled in the loop above (edge label).
+    const DRAGGABLE_TEXT_PARENTS = 'g.entity, g.link, g.participant-head, g.participant-tail, g.participant-lifeline, g.message';
+    svg.querySelectorAll('text').forEach((textEl) => {
+      if (textEl.closest(DRAGGABLE_TEXT_PARENTS)) return;
+      textEl.classList.add('pex-selectable');
+      const fnTextClick = (e) => {
+        e.stopPropagation();
+        select(textEl, { toggle: !!e.shiftKey });
+      };
+      textEl.addEventListener('click', fnTextClick);
+      textHandlers.push({ textEl, fnTextClick });
     });
     svg.addEventListener('click', onSvgClick);
 
-    // Esc clears any current selection. Listener is on the document so it
-    // works regardless of focus (the SVG itself rarely takes focus).
+    // Esc cancels an in-progress marquee, otherwise clears any current
+    // selection. Listener is on the document so it works regardless of focus
+    // (the SVG itself rarely takes focus).
     const onKeyDown = (e) => {
       if (e.key !== 'Escape') return;
-      if (!state.selectedSet.size && !state.selectedEdge) return;
-      selectNode(null);
-      selectEdge(null);
+      if (state.marquee) {
+        const m = state.marquee;
+        m.rect.remove();
+        svg.removeEventListener('pointermove', onMarqueeMove);
+        svg.removeEventListener('pointerup', endMarquee);
+        svg.removeEventListener('pointercancel', endMarquee);
+        try { svg.releasePointerCapture(m.pointerId); } catch {}
+        state.marquee = null;
+        return;
+      }
+      if (!state.selectedSet.size) return;
+      select(null);
     };
     doc.addEventListener('keydown', onKeyDown);
 
@@ -1544,7 +1760,7 @@
     // ordering (e.g. async DOM mutations from the markdown preview host)
     // gets the handle layer re-promoted to the top of the SVG.
     const onReposition = () => {
-      if (!state.selectedEdge) return;
+      if (!singleSelectedEdge()) return;
       showEdgeToolbar();
       renderHandles();
     };
@@ -1624,12 +1840,22 @@
         });
         linkHandlers.forEach(({ g, fnClick }) => g.removeEventListener('click', fnClick));
         textHandlers.forEach(({ textEl, fnDown, fnTextClick, fnContextMenu }) => {
-          textEl.removeEventListener('pointerdown', fnDown);
-          textEl.removeEventListener('click', fnTextClick);
-          textEl.removeEventListener('contextmenu', fnContextMenu);
+          if (fnDown) textEl.removeEventListener('pointerdown', fnDown);
+          if (fnTextClick) textEl.removeEventListener('click', fnTextClick);
+          if (fnContextMenu) textEl.removeEventListener('contextmenu', fnContextMenu);
           textEl.classList.remove('pex-text-dragging');
+          textEl.classList.remove('pex-text-selected');
+          textEl.classList.remove('pex-selectable');
         });
         svg.removeEventListener('click', onSvgClick);
+        svg.removeEventListener('pointerdown', onSvgPointerDown);
+        if (state.marquee) {
+          state.marquee.rect.remove();
+          svg.removeEventListener('pointermove', onMarqueeMove);
+          svg.removeEventListener('pointerup', endMarquee);
+          svg.removeEventListener('pointercancel', endMarquee);
+          state.marquee = null;
+        }
         doc.removeEventListener('keydown', onKeyDown);
         win.removeEventListener('scroll', onReposition, true);
         win.removeEventListener('resize', onReposition);
@@ -1638,8 +1864,7 @@
         svg.querySelectorAll('path.pex-edge-hit').forEach((p) => p.remove());
         const layer = svg.querySelector('g.pex-handle-layer');
         if (layer) layer.remove();
-        for (const el of state.selectedSet) el.classList.remove('pex-selected');
-        if (state.selectedEdge) state.selectedEdge.classList.remove('pex-edge-selected');
+        for (const el of state.selectedSet) removeSelectionClass(el);
         tb.remove();
         if (dirtyBadgeEl) dirtyBadgeEl.remove();
         if (draftPromptEl) draftPromptEl.remove();
