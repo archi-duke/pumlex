@@ -333,31 +333,32 @@ function resizeOneCluster($, $cluster, nodes) {
 
 function expandViewBox($, layout) {
   const svg = $('svg').first();
-  const vb = (svg.attr('viewBox') || '').split(/\s+/).map(Number);
-  if (vb.length !== 4) return;
-  const [x, y, w, h] = vb;
-  // Compute the exact enclosing rect: original viewBox ∪ every moved
-  // entity's post-translate bbox. Earlier we grew by max|dx|/max|dy| which
-  // overshoots whenever the moved entity wasn't originally at the diagram
-  // edge — leaving visible empty padding after a layout edit.
-  let xMin = x, yMin = y, xMax = x + w, yMax = y + h;
+  const origVb = (svg.attr('viewBox') || '').split(/\s+/).map(Number);
+  // Compute the tight enclosing rect of all post-edit content: entities
+  // (translated), clusters (post-resize), edge labels (post-offset), and
+  // free text (titles, captions). Mirrors pex-core/inline.js so the SVG
+  // returned from /render-with-layout matches what the inline editor
+  // showed — and shrinks back to fit when content moves closer together.
+  let xMin = Infinity, yMin = Infinity, xMax = -Infinity, yMax = -Infinity;
+  let any = false;
+  const consider = (x1, y1, x2, y2) => {
+    if (!isFinite(x1) || !isFinite(y1) || !isFinite(x2) || !isFinite(y2)) return;
+    if (x1 < xMin) xMin = x1;
+    if (y1 < yMin) yMin = y1;
+    if (x2 > xMax) xMax = x2;
+    if (y2 > yMax) yMax = y2;
+    any = true;
+  };
+  // Entities, with their translate offsets
   $('g.entity').each((_, el) => {
     const $el = $(el);
     const q = $el.attr('data-qualified-name') || $el.attr('id');
-    if (!q) return;
-    const d = layout[q];
-    if (!d || (d.dx === 0 && d.dy === 0)) return;
+    const d = (q && layout[q]) || { dx: 0, dy: 0 };
     const b = entityBBox($, $el);
     if (!b) return;
-    const ex = b.x + d.dx, ey = b.y + d.dy;
-    if (ex < xMin) xMin = ex;
-    if (ey < yMin) yMin = ey;
-    if (ex + b.w > xMax) xMax = ex + b.w;
-    if (ey + b.h > yMax) yMax = ey + b.h;
+    consider(b.x + d.dx, b.y + d.dy, b.x + d.dx + b.w, b.y + d.dy + b.h);
   });
-  // Clusters were just resized in-place by resizeContainers — include their
-  // post-resize rect so the viewBox grows to fit a cluster that expanded
-  // around moved children.
+  // Clusters after resizeContainers updated their <rect>
   $('g.cluster').each((_, el) => {
     const $rect = $(el).find('rect').first();
     if (!$rect.length) return;
@@ -366,12 +367,41 @@ function expandViewBox($, layout) {
     const cw = parseFloat($rect.attr('width'));
     const ch = parseFloat($rect.attr('height'));
     if ([cx, cy, cw, ch].some(Number.isNaN)) return;
-    if (cx < xMin) xMin = cx;
-    if (cy < yMin) yMin = cy;
-    if (cx + cw > xMax) xMax = cx + cw;
-    if (cy + ch > yMax) yMax = cy + ch;
+    consider(cx, cy, cx + cw, cy + ch);
   });
-  const pad = 8;
+  // Free text — titles, captions. Skip text inside entity/cluster (already
+  // covered by their bboxes) and edge labels (handled below). Use a coarse
+  // estimate of the rendered text bbox: width ≈ chars · font · 0.6,
+  // height ≈ font, with the y attribute treated as the baseline.
+  const TEXT_HEIGHT_DEFAULT = 12;
+  $('text').each((_, el) => {
+    const $el = $(el);
+    if ($el.closest('g.entity, g.cluster, g.link').length) return;
+    const x = parseFloat($el.attr('x'));
+    const y = parseFloat($el.attr('y'));
+    if (Number.isNaN(x) || Number.isNaN(y)) return;
+    const fs = parseFloat(($el.attr('font-size') || '').toString().replace('px','')) || TEXT_HEIGHT_DEFAULT;
+    const txt = $el.text() || '';
+    const w = txt.length * fs * 0.6;
+    consider(x, y - fs, x + w, y);
+  });
+  // Edge labels (post-applyEdgeFollow x/y reflect any user offset)
+  $('g.link text').each((_, el) => {
+    const $el = $(el);
+    const x = parseFloat($el.attr('x'));
+    const y = parseFloat($el.attr('y'));
+    if (Number.isNaN(x) || Number.isNaN(y)) return;
+    const fs = parseFloat(($el.attr('font-size') || '').toString().replace('px','')) || TEXT_HEIGHT_DEFAULT;
+    const txt = $el.text() || '';
+    const w = txt.length * fs * 0.6;
+    consider(x, y - fs, x + w, y);
+  });
+  if (!any) {
+    // Empty / unrecognized markup — keep the original viewBox.
+    if (origVb.length !== 4) return;
+    return;
+  }
+  const pad = 10;
   xMin -= pad; yMin -= pad; xMax += pad; yMax += pad;
   const nw = xMax - xMin, nh = yMax - yMin;
   svg.attr('viewBox', `${xMin} ${yMin} ${nw} ${nh}`);
@@ -571,25 +601,42 @@ function applyLayoutSequence($, layout) {
 
 function expandViewBoxSequence($, partsByQname) {
   const $svg = $('svg').first();
-  const vb = ($svg.attr('viewBox') || '').split(/\s+/).map(Number);
-  if (vb.length !== 4) return;
-  const [x, y, w, h] = vb;
-  let xMin = x, yMin = y, xMax = x + w, yMax = y + h;
+  // Tight bbox of all sequence content (translated participants, messages,
+  // free text). Mirrors the generic expandViewBox so the diagram resizes
+  // both up and down with edits.
+  let xMin = Infinity, yMin = Infinity, xMax = -Infinity, yMax = -Infinity;
+  let any = false;
+  const consider = (x1, y1, x2, y2) => {
+    if (!isFinite(x1) || !isFinite(y1) || !isFinite(x2) || !isFinite(y2)) return;
+    if (x1 < xMin) xMin = x1; if (y1 < yMin) yMin = y1;
+    if (x2 > xMax) xMax = x2; if (y2 > yMax) yMax = y2;
+    any = true;
+  };
   for (const q of Object.keys(partsByQname)) {
     const p = partsByQname[q];
-    if (!p.currentDx) continue;
     [p.lifelineG, p.headG, p.tailG, ...p.activationRects].forEach(($el) => {
       if (!$el || !$el.length) return;
       const b = entityBBox($, $el);
       if (!b) return;
-      const ex = b.x + p.currentDx;
-      if (ex < xMin) xMin = ex;
-      if (b.y < yMin) yMin = b.y;
-      if (ex + b.w > xMax) xMax = ex + b.w;
-      if (b.y + b.h > yMax) yMax = b.y + b.h;
+      const ex = b.x + (p.currentDx || 0);
+      consider(ex, b.y, ex + b.w, b.y + b.h);
     });
   }
-  const pad = 8;
+  // Free text + message text — coarse estimate, same as expandViewBox.
+  const TEXT_HEIGHT_DEFAULT = 12;
+  $('text').each((_, el) => {
+    const $el = $(el);
+    if ($el.closest('g.participant-head, g.participant-tail, g.participant-lifeline').length) return;
+    const x = parseFloat($el.attr('x'));
+    const y = parseFloat($el.attr('y'));
+    if (Number.isNaN(x) || Number.isNaN(y)) return;
+    const fs = parseFloat(($el.attr('font-size') || '').toString().replace('px','')) || TEXT_HEIGHT_DEFAULT;
+    const txt = $el.text() || '';
+    const w = txt.length * fs * 0.6;
+    consider(x, y - fs, x + w, y);
+  });
+  if (!any) return;
+  const pad = 10;
   xMin -= pad; yMin -= pad; xMax += pad; yMax += pad;
   const nw = xMax - xMin, nh = yMax - yMin;
   $svg.attr('viewBox', `${xMin} ${yMin} ${nw} ${nh}`);
