@@ -8,10 +8,20 @@ Markdown 미리보기 안에서 ` ```plantuml ` 블록을 SVG 로 렌더하고, 
 ## 요구사항
 
 - **VS Code** 1.80+
-- **plantumlEx 서버** (`packages/pex-server`) — 로컬 실행, 기본 `http://localhost:3030`
-- **Java** — PlantUML jar 호출용 (서버 측 요구사항)
+- **plantumlEx 서버** — 두 가지 운영 방식 중 하나. 아래 [서버 선택](#서버-선택) 참고.
+
+확장은 PlantUML 소스를 서버로 보내 SVG 를 받아옵니다. 서버를 어디서 띄우든 (본인 머신 / 사내 호스트 / 공용 인스턴스) `pumlex.serverUrl` 설정으로 가리키기만 하면 됩니다.
 
 ## 설치
+
+GitHub Releases 에서 `.vsix` 받기:
+
+```bash
+gh release download v0.0.2 -R archi-duke/pumlex -p '*.vsix'
+code --install-extension pumlex-*.vsix
+```
+
+또는 직접 빌드:
 
 ```bash
 # 모노레포 루트에서
@@ -22,18 +32,46 @@ code --install-extension packages/pex-vscode/pumlex-*.vsix
 
 개발 모드: `code packages/pex-vscode` → F5 (Extension Development Host).
 
-## 첫 실행 흐름
+## 서버 선택
 
-**1) plantumlEx 서버 실행** — 별도 터미널에서:
+### A. 운영자가 제공하는 원격 서버 사용 (권장)
+
+배포 페이지 / 사내 채널에 안내된 서버 URL 을 `pumlex.serverUrl` 에 입력. **Java 등 로컬 의존성 불필요.**
+
+VS Code 설정 변경:
+
+1. `Cmd/Ctrl + ,` → 우상단 **"Open Settings (JSON)"** 아이콘 클릭
+2. settings.json 에 추가:
+   ```json
+   "pumlex.serverUrl": "https://pumlex.your-org.example.com"
+   ```
+3. 저장하면 캐시가 자동 무효화되고 활성 미리보기가 새로고침됨.
+
+또는 UI 로: 설정 검색에 `pumlex.serverUrl` → 칸에 직접 입력.
+
+**검증** — `Cmd/Ctrl+Shift+P` → `pumlex: Show Status`. `server reachable: OK (HTTP 200)` 이 보이면 정상.
+
+원격 서버는 HTTPS 가 권장됩니다 — markdown preview 의 mixed-content 정책에 걸리지 않으려면. 확장은 extension host 측에서 fetch 하므로 preview 의 CSP 영향은 없지만 (`Cmd+K V` 미리보기 패널), 운영 관점에서 평문 HTTP 는 피하세요.
+
+### B. 본인 머신에서 직접 띄우기 (개발 / 오프라인)
+
+`packages/pex-server` 를 로컬 실행. **추가 의존성:**
+- **Java** 11+ — PlantUML jar 호출용
+- **PlantUML server** (기본 `http://localhost:8080`) — `PLANTUML_URL` env 로 변경 가능
 
 ```bash
-npm run start:server          # 모노레포 루트, 기본 :3030
-# PORT=4000 npm run start:server      # 포트 변경
+# 모노레포 루트에서
+npm install
+npm run start:server                          # :3030 (PORT env 로 변경 가능)
 ```
 
-**2) 확장 설정 확인** — `pumlex.serverUrl` 이 위 주소와 일치하는지 (기본값 그대로 두면 됨).
+`pumlex.serverUrl` 은 기본값 `http://localhost:3030` 그대로 두면 됨.
 
-**3) 마크다운에 fence 작성**:
+## 첫 실행 흐름
+
+**1) 서버 준비** — 위 [서버 선택](#서버-선택) 의 A 또는 B.
+
+**2) 마크다운에 fence 작성**:
 
 ````markdown
 ```plantuml
@@ -47,9 +85,9 @@ api --> db
 ```
 ````
 
-**4) 미리보기 열기** — `Cmd+K V` (macOS) / `Ctrl+K V`. 처음에는 placeholder 가 잠깐 떴다가 SVG 로 자동 교체된다.
+**3) 미리보기 열기** — `Cmd+K V` (macOS) / `Ctrl+K V`. 처음에는 placeholder 가 잠깐 떴다가 SVG 로 자동 교체된다.
 
-**5) 인라인 편집** — SVG 위에 마우스를 올리면 ✎ 버튼이 뜬다.
+**4) 인라인 편집** — SVG 위에 마우스를 올리면 ✎ 버튼이 뜬다.
 - 클릭 → 노드 드래그 / 멀티 셀렉트(Shift+클릭) / 그룹 이동 / 엣지 곡선 핸들
 - 엣지 부속 텍스트(multiplicity, qualifier, role 등) 개별 이동 → **Ctrl + 드래그** (Mac 은 OS contextmenu 충돌을 피하려면 **Cmd + 드래그** 권장). 라벨은 라인 자동 추종에 더해 사용자 오프셋이 함께 보존됨.
 - ✓ 클릭 → 변경된 좌표가 PlantUML 소스의 `' @startmeta` 블록에 기록 (확장이 텍스트 에디터에 `WorkspaceEdit` 적용)
@@ -123,7 +161,7 @@ pumlex 는 VS Code 의 **built-in markdown preview** 에 markdown-it 플러그�
 
 | 증상 | 원인 / 해결 |
 |---|---|
-| placeholder 가 사라지지 않음 | 서버 미가동. 미리보기 안 안내 + "↻ 재시도" 버튼 사용. `npm run start:server` 로 기동. |
+| placeholder 가 사라지지 않음 | 서버 미가동 또는 `pumlex.serverUrl` 오설정. `pumlex: Show Status` 로 reachability 확인. 로컬이면 `npm run start:server`, 원격이면 운영자가 안내한 URL 이 맞는지 + HTTPS 인증서가 유효한지 검토. |
 | "render error" 표시 | PlantUML 소스 자체 오류. 에디터로 돌아가 라인 메시지 확인. |
 | `serverUrl` 변경 후 옛 SVG 가 잠깐 보임 | 활성 미리보기는 자동 무효화되지만 다른 `.md` 의 미리보기는 재오픈 필요할 수 있다. `pumlex: Clear Cache` 실행. |
 | ✓ 클릭 후 소스 갱신 안 됨 | 해당 markdown 파일이 열려 있어야 함 (확장이 `workspace.textDocuments` 에서 매칭). 닫혀 있으면 "블록 #N 을 찾지 못했습니다" 안내. |

@@ -23,6 +23,8 @@
 - [x] **C-1** `vsce package` → `.vsix` 빌드 — `npm run package`로 `pumlex-0.0.1.vsix` 생성. `code --install-extension <vsix>` 로 설치 가능. LICENSE / .vscodeignore 추가.
 - [x] **C-2** README 사용자 가이드 — `packages/pex-vscode/README.md` 신규 작성 (첫 실행 흐름, 명령, 설정, CSP 메모, 트러블슈팅, 알려진 제약). 루트 README 에서 링크 + docs / architecture / ROADMAP 안내 섹션 추가.
 - [x] **C-3** `pumlex.serverUrl` 설정 변경 동작 검증 — 캐시 clear / preview refresh 는 정상이지만 **markdown-it 플러그인이 활성화 시점의 serverUrl 을 closure 로 캡처**해 변경 후에도 옛 URL 로 fetch 가 나가는 버그 발견. `extension.ts` 가 `pluginOpts` 객체 reference 를 유지하고 onDidChangeConfiguration 핸들러가 `pluginOpts.serverUrl` 을 갱신하도록 수정.
+- [x] **C-4** 원격 서버 운영 시나리오 지원 — `server.js` 의 PORT default 가 3000 인데 클라이언트 / 문서 default 는 3030 이었던 불일치 수정 (server.js → 3030). `pex-vscode/README.md` 에 "서버 선택" 섹션 추가, 운영자가 호스팅하는 원격 서버를 가리키는 경우 (settings.json 예시, UI 경로, HTTPS 권장, Show Status 로 검증) 를 1급 케이스로 끌어올림. 로컬 띄우는 케이스는 B 옵션으로 분리. 트러블슈팅 첫 행도 원격/로컬 양쪽 안내.
+- [x] **C-5** v0.0.2 GitHub Release 게시 — lightweight tag `v0.0.2` + `gh release create` 로 `.vsix` 자산 첨부. 사용자는 `gh release download v0.0.2 -p '*.vsix'` 로 받음.
 
 ## D. UX 다듬기  ★
 
@@ -66,3 +68,5 @@
 - 2026-04-30: **E-3.5** 완료 — Ctrl/Cmd + 드래그로 엣지 부속 텍스트 (multiplicity 등) 개별 이동. `state.draggingText` 추가, applyEdgeFollow 텍스트 투영에 per-text offset, g.link text 별 pointerdown / click 핸들러.
 - 2026-04-30: ROADMAP 동기화 — **E-0 / E-1 / E-2** 가 이전 세션에 구현 완료된 것을 체크박스에 반영. 커밋 hash + 핵심 메커니즘 요약 추가.
 - 2026-04-30: **E-4 (시퀀스)** 완료 — `pex-inline.js` 의 `activate` 입구에서 `data-diagram-type="SEQUENCE"` 분기, 별도 어댑터가 `g.participant-lifeline/head/tail` + 같은 qname 의 activation rect (`<title>` 매칭) 를 묶어 X 드래그. 메시지 line 의 양 끝은 각자 자기 participant 의 dx, 화살촉 polygon 은 destination 의 dx, 라벨 text 는 line 위 위치에 따라 lerp. layout 메타에 `participants` 키 추가 (schema 2), 양쪽 `normalizeLayout` 보존. `server.js` `applyLayout` 에 동일 분기 추가해 `/render-with-layout` 로 받은 정적 SVG 도 일치. 메시지 라벨 Ctrl+drag 는 의도적으로 스킵 (사용 빈도 낮음). 활동 다이어그램 / `box` 그룹 outline 동기 확장은 후속.
+- 2026-05-23: **C-5** 완료 — `v0.0.2` GitHub Release 게시. lightweight tag + `.vsix` 자산 첨부. https://github.com/archi-duke/pumlex/releases/tag/v0.0.2
+- 2026-05-23: **C-4** 완료 — `server.js` PORT default 3000→3030 (클라이언트/문서와 일치). `pex-vscode/README.md` 에 "서버 선택" 섹션 추가, 원격 서버 운영 시나리오 (settings.json 예시 / UI 경로 / HTTPS / Show Status 검증) 를 1급 케이스로 끌어올리고 로컬 띄우기는 옵션 B 로 분리. 트러블슈팅 첫 행도 양쪽 안내.
