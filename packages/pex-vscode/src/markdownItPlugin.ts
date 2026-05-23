@@ -1,5 +1,5 @@
-import * as crypto from 'crypto';
 import * as vscode from 'vscode';
+import { hashSource } from './hash';
 
 // markdown-it plugin: replaces ```plantuml``` fenced blocks with an inline
 // SVG fetched from plantumlEx /render-with-layout, so the SVG becomes part
@@ -22,10 +22,6 @@ const cache = new Map<string, CacheEntry>();
 // the loading placeholder can show a stable elapsed-time count even though
 // the preview re-renders every 120ms while waiting.
 const inFlight = new Map<string, number>();
-
-function hashSource(s: string): string {
-  return crypto.createHash('sha256').update(s).digest('hex').slice(0, 16);
-}
 
 function escapeAttr(s: string): string {
   return s

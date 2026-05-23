@@ -52,6 +52,11 @@
 
     const blockIndex = parseInt(blockEl.dataset.blockIndex || '0', 10);
     const initialSource = decodeURIComponent(blockEl.dataset.blockSourceEncoded || '');
+    // Stamped by the markdown-it plugin. Forwarded on the commit URI so the
+    // extension can find the exact fence by content hash — robust against
+    // multi-file open + preview-only states where index-based lookup picks
+    // the wrong document.
+    const sourceHash = blockEl.dataset.sourceHash || '';
 
     let session = null;
     let currentSource = initialSource;
@@ -95,7 +100,7 @@
         onSourceChange: (src) => {
           currentSource = src;
           if (commitBtn) commitBtn.href = buildVscodeUri('/commit', {
-            blockIndex: String(blockIndex), source: src,
+            blockIndex: String(blockIndex), source: src, sourceHash,
           });
         },
       });
@@ -107,7 +112,7 @@
       commitBtn.textContent = '✓ 적용';
       commitBtn.title = '편집 결과를 마크다운에 반영';
       commitBtn.href = buildVscodeUri('/commit', {
-        blockIndex: String(blockIndex), source: currentSource,
+        blockIndex: String(blockIndex), source: currentSource, sourceHash,
       });
       // After commit click, VS Code will round-trip applyEdit; the file
       // change triggers a preview re-render, replacing this block. So we

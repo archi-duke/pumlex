@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { findNthPlantumlBlock } from './markdownUtils';
+import { findNthPlantumlBlock, findPlantumlBlockBySourceHash, PlantumlBlockRange } from './markdownUtils';
 import { openEditorPanel } from './editorPanel';
 import {
   createMarkdownItPlugin,
@@ -24,6 +24,11 @@ import {
 interface EditBlockArgs {
   blockIndex: number;
   source: string;
+  /** SHA256/16 of the source as the preview saw it. When present, commit
+   *  lookup matches by hash across all open .md docs instead of trusting the
+   *  positional blockIndex — disambiguates when multiple files are open or
+   *  the previewed doc isn't a visible text editor. */
+  sourceHash?: string;
 }
 
 async function handleEditBlock(context: vscode.ExtensionContext, args: EditBlockArgs) {
@@ -189,11 +194,12 @@ export function activate(context: vscode.ExtensionContext) {
           const params = new URLSearchParams(uri.query);
           const blockIndex = parseInt(params.get('blockIndex') || '-1', 10);
           const source = params.get('source') || '';
+          const sourceHash = params.get('sourceHash') || undefined;
           if (Number.isNaN(blockIndex) || blockIndex < 0 || !source) {
             vscode.window.showErrorMessage('pumlex: invalid commit URI parameters');
             return;
           }
-          commitInlineEdit(context, { blockIndex, source });
+          commitInlineEdit(context, { blockIndex, source, sourceHash });
           return;
         }
         vscode.window.showWarningMessage(`pumlex: unknown URI path ${uri.path}`);
@@ -221,8 +227,6 @@ async function commitInlineEdit(
   _context: vscode.ExtensionContext,
   args: EditBlockArgs,
 ) {
-  // Same lookup logic as handleEditBlock — find a markdown document that
-  // has an Nth plantuml block, prefer visible editors first.
   const candidates: vscode.TextDocument[] = [];
   for (const ed of vscode.window.visibleTextEditors) {
     if (ed.document.languageId === 'markdown') candidates.push(ed.document);
@@ -230,18 +234,34 @@ async function commitInlineEdit(
   for (const doc of vscode.workspace.textDocuments) {
     if (doc.languageId === 'markdown' && !candidates.includes(doc)) candidates.push(doc);
   }
+
+  // Hash-first lookup. preview.js forwards data-source-hash on the commit
+  // URI; iterate every candidate doc and pick the one whose fence body
+  // hashes to the same value. Falls back to positional blockIndex only when
+  // the URI lacks a hash (older preview, manual URI hand-craft, etc.) or
+  // when no hash matched anywhere — in the latter case the source on disk
+  // has diverged from what the preview captured, but a best-effort write
+  // is still preferable to a hard failure.
   let target: vscode.TextDocument | undefined;
-  for (const doc of candidates) {
-    if (findNthPlantumlBlock(doc, args.blockIndex)) { target = doc; break; }
+  let block: PlantumlBlockRange | null = null;
+  if (args.sourceHash) {
+    for (const doc of candidates) {
+      const r = findPlantumlBlockBySourceHash(doc, args.sourceHash);
+      if (r) { target = doc; block = r; break; }
+    }
   }
   if (!target) {
+    for (const doc of candidates) {
+      const r = findNthPlantumlBlock(doc, args.blockIndex);
+      if (r) { target = doc; block = r; break; }
+    }
+  }
+  if (!target || !block) {
     vscode.window.showWarningMessage(
       `pumlex: 마크다운 문서에서 블록 #${args.blockIndex + 1}을 찾지 못했습니다.`,
     );
     return;
   }
-  const block = findNthPlantumlBlock(target, args.blockIndex);
-  if (!block) return;
   const edit = new vscode.WorkspaceEdit();
   edit.replace(target.uri, block.range, args.source.replace(/\n+$/, ''));
   const ok = await vscode.workspace.applyEdit(edit);
