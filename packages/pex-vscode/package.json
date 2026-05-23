@@ -2,7 +2,7 @@
   "name": "pumlex",
   "displayName": "pumlex",
   "description": "Inline plantuml layout editing in VS Code Markdown preview, powered by plantumlEx",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "archi-duke",
   "private": true,
   "license": "MIT",
