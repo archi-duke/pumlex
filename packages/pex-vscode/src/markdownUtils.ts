@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { hashSource } from './hash';
 
 // Locate the Nth ```plantuml``` block in a markdown document and return the
 // range of its body content (the lines between the opening and closing
@@ -20,6 +21,18 @@ export interface PlantumlBlockRange {
 const FENCE_OPEN = /^[ \t]*```\s*(plantuml|puml)\b/i;
 const FENCE_CLOSE = /^[ \t]*```\s*$/;
 
+function bodyRangeFromFences(
+  doc: vscode.TextDocument,
+  openLine: number,
+  closeLine: number,
+): vscode.Range {
+  const start = new vscode.Position(openLine + 1, 0);
+  const bodyEnd = closeLine > openLine + 1
+    ? new vscode.Position(closeLine - 1, doc.lineAt(closeLine - 1).text.length)
+    : start;
+  return new vscode.Range(start, bodyEnd);
+}
+
 export function findNthPlantumlBlock(
   doc: vscode.TextDocument,
   index: number,
@@ -29,30 +42,40 @@ export function findNthPlantumlBlock(
   for (let i = 0; i < doc.lineCount; i++) {
     const text = doc.lineAt(i).text;
     if (openLine === -1) {
-      if (FENCE_OPEN.test(text)) {
-        openLine = i;
+      if (FENCE_OPEN.test(text)) openLine = i;
+    } else if (FENCE_CLOSE.test(text)) {
+      if (n === index) {
+        return { range: bodyRangeFromFences(doc, openLine, i), openLine, closeLine: i };
       }
-    } else {
-      if (FENCE_CLOSE.test(text)) {
-        if (n === index) {
-          // Body range: lines (openLine + 1) .. (i - 1) inclusive.
-          // Use Position(openLine + 1, 0) → Position(i, 0) so a replacement
-          // doesn't include the fence lines themselves and keeps trailing \n
-          // formatting consistent with how the source was extracted.
-          const start = new vscode.Position(openLine + 1, 0);
-          const end = new vscode.Position(i, 0);
-          // Trim the trailing newline of the body so getText(range) matches
-          // the source as the preview script saw it (without the final \n
-          // that bumps the cursor onto the closing fence line).
-          // Strategy: use range that ends at end of previous line.
-          const bodyEnd = i > openLine + 1
-            ? new vscode.Position(i - 1, doc.lineAt(i - 1).text.length)
-            : start;
-          return { range: new vscode.Range(start, bodyEnd), openLine, closeLine: i };
-        }
-        n++;
-        openLine = -1;
+      n++;
+      openLine = -1;
+    }
+  }
+  return null;
+}
+
+// Walk every ```plantuml``` fence in the document and return the first whose
+// body hashes to `sourceHash`. Used by commit-side lookup so the right fence
+// is picked even when the user has multiple .md files open and the previewed
+// one isn't in `visibleTextEditors`. The plugin (`markdownItPlugin.ts`)
+// stamps the hash into `data-source-hash`; the preview script forwards it on
+// the commit URI; this function inverts that mapping.
+export function findPlantumlBlockBySourceHash(
+  doc: vscode.TextDocument,
+  sourceHash: string,
+): PlantumlBlockRange | null {
+  let openLine = -1;
+  for (let i = 0; i < doc.lineCount; i++) {
+    const text = doc.lineAt(i).text;
+    if (openLine === -1) {
+      if (FENCE_OPEN.test(text)) openLine = i;
+    } else if (FENCE_CLOSE.test(text)) {
+      const lines: string[] = [];
+      for (let j = openLine + 1; j < i; j++) lines.push(doc.lineAt(j).text);
+      if (hashSource(lines.join('\n')) === sourceHash) {
+        return { range: bodyRangeFromFences(doc, openLine, i), openLine, closeLine: i };
       }
+      openLine = -1;
     }
   }
   return null;

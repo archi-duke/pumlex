@@ -25,6 +25,7 @@
 - [x] **C-3** `pumlex.serverUrl` 설정 변경 동작 검증 — 캐시 clear / preview refresh 는 정상이지만 **markdown-it 플러그인이 활성화 시점의 serverUrl 을 closure 로 캡처**해 변경 후에도 옛 URL 로 fetch 가 나가는 버그 발견. `extension.ts` 가 `pluginOpts` 객체 reference 를 유지하고 onDidChangeConfiguration 핸들러가 `pluginOpts.serverUrl` 을 갱신하도록 수정.
 - [x] **C-4** 원격 서버 운영 시나리오 지원 — `server.js` 의 PORT default 가 3000 인데 클라이언트 / 문서 default 는 3030 이었던 불일치 수정 (server.js → 3030). `pex-vscode/README.md` 에 "서버 선택" 섹션 추가, 운영자가 호스팅하는 원격 서버를 가리키는 경우 (settings.json 예시, UI 경로, HTTPS 권장, Show Status 로 검증) 를 1급 케이스로 끌어올림. 로컬 띄우는 케이스는 B 옵션으로 분리. 트러블슈팅 첫 행도 원격/로컬 양쪽 안내.
 - [x] **C-5** v0.0.2 GitHub Release 게시 — lightweight tag `v0.0.2` + `gh release create` 로 `.vsix` 자산 첨부. 사용자는 `gh release download v0.0.2 -p '*.vsix'` 로 받음.
+- [x] **C-6** 인라인 ✓ 적용이 잘못된 .md 를 고치던 버그 수정 — `commitInlineEdit` 가 positional `blockIndex` 만 보고 후보 문서 중 가장 먼저 매칭되는 것에 `WorkspaceEdit` 를 적용하던 구조. 다중 .md 열림 + preview-only 상태에서 다른 파일이 먼저 잡혀 "블록 #N 못 찾음" 또는 잘못된 파일 갱신. 해결: markdown-it 플러그인이 이미 박아두던 `data-source-hash` 를 preview script 가 commit URI 에 같이 실어 보내고, 서버 측이 hash 일치하는 fence 를 candidate doc 들 사이에서 직접 찾음. `hashSource` 를 `src/hash.ts` 로 추출해 양쪽이 동일 정규화 (`\n+$` 제거) 사용. 인덱스 fallback 유지 (구 URI 호환).
 
 ## D. UX 다듬기  ★
 
@@ -70,3 +71,4 @@
 - 2026-04-30: **E-4 (시퀀스)** 완료 — `pex-inline.js` 의 `activate` 입구에서 `data-diagram-type="SEQUENCE"` 분기, 별도 어댑터가 `g.participant-lifeline/head/tail` + 같은 qname 의 activation rect (`<title>` 매칭) 를 묶어 X 드래그. 메시지 line 의 양 끝은 각자 자기 participant 의 dx, 화살촉 polygon 은 destination 의 dx, 라벨 text 는 line 위 위치에 따라 lerp. layout 메타에 `participants` 키 추가 (schema 2), 양쪽 `normalizeLayout` 보존. `server.js` `applyLayout` 에 동일 분기 추가해 `/render-with-layout` 로 받은 정적 SVG 도 일치. 메시지 라벨 Ctrl+drag 는 의도적으로 스킵 (사용 빈도 낮음). 활동 다이어그램 / `box` 그룹 outline 동기 확장은 후속.
 - 2026-05-23: **C-5** 완료 — `v0.0.2` GitHub Release 게시. lightweight tag + `.vsix` 자산 첨부. https://github.com/archi-duke/pumlex/releases/tag/v0.0.2
 - 2026-05-23: **C-4** 완료 — `server.js` PORT default 3000→3030 (클라이언트/문서와 일치). `pex-vscode/README.md` 에 "서버 선택" 섹션 추가, 원격 서버 운영 시나리오 (settings.json 예시 / UI 경로 / HTTPS / Show Status 검증) 를 1급 케이스로 끌어올리고 로컬 띄우기는 옵션 B 로 분리. 트러블슈팅 첫 행도 양쪽 안내.
+- 2026-05-23: **C-6** 완료 — 인라인 commit 의 hash-based fence lookup. preview.js 가 `data-source-hash` 를 commit URI 에 실어 보내고, `findPlantumlBlockBySourceHash` 가 모든 candidate doc 을 hash 로 매칭. `hashSource` 를 `src/hash.ts` 로 추출해 plugin 측 (markdown-it `token.content`, trailing \n 포함) 과 commit 측 (line join, trailing \n 없음) 모두 동일 digest 산출. 다중 .md 열림 + preview-only 상태에서 잘못된 파일이 갱신되거나 "블록 #N 못 찾음" 으로 끝나던 버그 해결.
