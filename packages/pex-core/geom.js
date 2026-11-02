@@ -318,7 +318,250 @@
     return out.join(' ');
   }
 
+  // ---- Container (cluster / composite state) resize --------------------------
+  // PlantUML draws containers with very different primitives: rectangle is a
+  // <rect>, package a tabbed <path> + <line>, node a <polygon> + 3 <line>s,
+  // cloud a curvy <path>, component a <rect> + icon <rect>s, and so on. Rather
+  // than special-case each, every frame coordinate goes through a per-axis
+  // piecewise map ("9-slice"): the margins around the children stay rigid (so
+  // tabs, icons and rounded corners keep their size) and only the span between
+  // them stretches. DOM-free so client (inline.js) and server (server.js) share
+  // the same geometry.
+  const CONTAINER_LEFT_LABEL_MAX_INSET = 8; // label this close to the left edge is left-aligned
+  const CONTAINER_CENTER_TOLERANCE = 1.5;
+  const EDGE_STRAIGHT_TOLERANCE = 3; // near-straight routed edges stray ~2.6; real curves 12+
+
+  function roundCoord(v) { return Math.round(v * 1000) / 1000; }
+
+  // Rewrite every absolute coordinate of a path through fx/fy. Arc radii/flags
+  // are preserved. Relative commands aren't emitted by PlantUML; such a path is
+  // returned as is rather than mangled.
+  function mapPathCoords(d, fx, fy) {
+    if (/[mlhvcsqta]/.test(d)) return d;
+    const out = [];
+    const re = /([MLHVCSQTAZ])([^MLHVCSQTAZ]*)/g;
+    let m;
+    while ((m = re.exec(d)) !== null) {
+      const cmd = m[1];
+      const n = (m[2].match(/-?\d*\.?\d+(?:e[-+]?\d+)?/gi) || []).map(parseFloat);
+      if (cmd === 'Z') { out.push('Z'); continue; }
+      if (cmd === 'H') { out.push('H' + n.map(fx).join(' ')); continue; }
+      if (cmd === 'V') { out.push('V' + n.map(fy).join(' ')); continue; }
+      const parts = [];
+      if (cmd === 'A') {
+        for (let i = 0; i + 6 < n.length; i += 7) {
+          parts.push(`${n[i]},${n[i + 1]} ${n[i + 2]} ${n[i + 3]} ${n[i + 4]} ${fx(n[i + 5])},${fy(n[i + 6])}`);
+        }
+      } else {
+        for (let i = 0; i + 1 < n.length; i += 2) parts.push(`${fx(n[i])},${fy(n[i + 1])}`);
+      }
+      out.push(cmd + parts.join(' '));
+    }
+    return out.join(' ');
+  }
+
+  // Extent of one SVG shape from its attributes (no transforms applied). For a
+  // path, curve control points count too: slightly generous, never undershoots.
+  function shapeBounds(tag, a) {
+    const num = (k) => parseFloat(a[k]) || 0;
+    if (tag === 'rect') return { x1: num('x'), y1: num('y'), x2: num('x') + num('width'), y2: num('y') + num('height') };
+    if (tag === 'ellipse') return { x1: num('cx') - num('rx'), y1: num('cy') - num('ry'), x2: num('cx') + num('rx'), y2: num('cy') + num('ry') };
+    if (tag === 'circle') return { x1: num('cx') - num('r'), y1: num('cy') - num('r'), x2: num('cx') + num('r'), y2: num('cy') + num('r') };
+    if (tag === 'line') {
+      return {
+        x1: Math.min(num('x1'), num('x2')), y1: Math.min(num('y1'), num('y2')),
+        x2: Math.max(num('x1'), num('x2')), y2: Math.max(num('y1'), num('y2')),
+      };
+    }
+    const xs = [], ys = [];
+    if (tag === 'polygon' || tag === 'polyline') {
+      const n = (a.points || '').trim().split(/[\s,]+/).filter((s) => s.length).map(parseFloat);
+      for (let i = 0; i + 1 < n.length; i += 2) { xs.push(n[i]); ys.push(n[i + 1]); }
+    } else if (tag === 'path') {
+      mapPathCoords(a.d || '', (x) => { xs.push(x); return x; }, (y) => { ys.push(y); return y; });
+    }
+    if (!xs.length || !ys.length) return null;
+    return { x1: Math.min(...xs), y1: Math.min(...ys), x2: Math.max(...xs), y2: Math.max(...ys) };
+  }
+
+  function mapShapeAttrs(tag, a, fx, fy) {
+    if (tag === 'rect') {
+      const x1 = fx(parseFloat(a.x) || 0), y1 = fy(parseFloat(a.y) || 0);
+      const x2 = fx((parseFloat(a.x) || 0) + (parseFloat(a.width) || 0));
+      const y2 = fy((parseFloat(a.y) || 0) + (parseFloat(a.height) || 0));
+      return { x: x1, y: y1, width: roundCoord(x2 - x1), height: roundCoord(y2 - y1) };
+    }
+    if (tag === 'line') return { x1: fx(parseFloat(a.x1)), y1: fy(parseFloat(a.y1)), x2: fx(parseFloat(a.x2)), y2: fy(parseFloat(a.y2)) };
+    if (tag === 'ellipse' || tag === 'circle') return { cx: fx(parseFloat(a.cx)), cy: fy(parseFloat(a.cy)) };
+    if (tag === 'path') return { d: mapPathCoords(a.d || '', fx, fy) };
+    if (tag === 'polygon' || tag === 'polyline') {
+      const n = (a.points || '').trim().split(/[\s,]+/).filter((s) => s.length).map(parseFloat);
+      const pts = [];
+      for (let i = 0; i + 1 < n.length; i += 2) pts.push(`${fx(n[i])},${fy(n[i + 1])}`);
+      return { points: pts.join(' ') };
+    }
+    return {};
+  }
+
+  // A container only moves or resizes through its descendants' deltas, so an edge
+  // attached to the container must re-route when any of them moved.
+  function hasMovedDescendant(nodes, qname) {
+    const prefix = qname + '.';
+    return Object.keys(nodes).some((k) => k.startsWith(prefix) && (nodes[k].dx || nodes[k].dy));
+  }
+
+  // Whether an edge path actually looks curved. PlantUML emits Bezier commands
+  // even for visually straight edges, so the command letter says nothing; measure
+  // how far any point (controls included) strays from the start-end chord.
+  function isPathCurved(d) {
+    const xs = [], ys = [];
+    mapPathCoords(d || '', (x) => { xs.push(x); return x; }, (y) => { ys.push(y); return y; });
+    if (xs.length < 2) return /[CQS]/i.test(d || '');
+    const x0 = xs[0], y0 = ys[0];
+    const dx = xs[xs.length - 1] - x0, dy = ys[ys.length - 1] - y0;
+    const len = Math.hypot(dx, dy);
+    if (len < 1) return xs.length > 2; // self-loop
+    return xs.some((x, i) => Math.abs((x - x0) * dy - (ys[i] - y0) * dx) / len > EDGE_STRAIGHT_TOLERANCE);
+  }
+
+  // Capture a container as first received. shapes: [{tag, attrs}], texts:
+  // [{x, y, w}], childBox: union {x, y, w, h} of its children at that moment.
+  // Returns null when the frame has no measurable shape.
+  function snapshotContainer(shapes, texts, childBox) {
+    let outline = null, outlineArea = -1;
+    const bounds = shapes.map((s) => {
+      const b = shapeBounds(s.tag, s.attrs);
+      if (b && (b.x2 - b.x1) * (b.y2 - b.y1) > outlineArea) {
+        outline = b;
+        outlineArea = (b.x2 - b.x1) * (b.y2 - b.y1);
+      }
+      return b;
+    });
+    if (!outline) return null;
+    const left = outline.x1, right = outline.x2, top = outline.y1, bottom = outline.y2;
+    const midX = (left + right) / 2;
+    const childX2 = childBox.x + childBox.w, childY2 = childBox.y + childBox.h;
+
+    // Rigid-zone boundaries. x <= stretchX1 follows the left edge, x >= stretchX2
+    // follows the right edge, and the span between them stretches.
+    let stretchX1 = childBox.x, stretchX2 = childX2;
+    let hasLeftLabel = false;
+    let minLabelW = 0;
+    const labels = texts.map((t) => {
+      const centered = Math.abs(t.x + t.w / 2 - midX) <= CONTAINER_CENTER_TOLERANCE;
+      if (centered) minLabelW = Math.max(minLabelW, t.w + 2 * CONTAINER_LEFT_LABEL_MAX_INSET);
+      else if (t.x - left <= CONTAINER_LEFT_LABEL_MAX_INSET && t.y <= childBox.y) {
+        hasLeftLabel = true;
+        stretchX1 = Math.max(stretchX1, t.x + t.w);
+      }
+      return { ...t, centered };
+    });
+    bounds.forEach((b) => {
+      if (!b || b === outline) return;
+      // Icons / folded corners on the right half stick to the right edge.
+      if (b.x1 > midX) stretchX2 = Math.min(stretchX2, b.x1);
+      // A package / frame tab belongs to its left-aligned label.
+      else if (hasLeftLabel && b.x1 - left <= 2 && b.y2 <= childBox.y) stretchX1 = Math.max(stretchX1, b.x2);
+    });
+    stretchX2 = Math.max(stretchX1, stretchX2);
+
+    return {
+      shapes, labels, left, right, top, bottom,
+      stretchX1, stretchX2,
+      padLeft: childBox.x - left, padRight: right - childX2,
+      padTop: childBox.y - top, padBottom: bottom - childY2,
+      stretchY1: childBox.y, stretchY2: Math.max(childBox.y, childY2),
+      minW: Math.max(
+        minLabelW,
+        stretchX1 < stretchX2 ? (stretchX1 - left) + (right - stretchX2) : right - left
+      ),
+      minH: childY2 > childBox.y ? (childBox.y - top) + (bottom - childY2) : bottom - top,
+    };
+  }
+
+  function containerAxisMap(lo, hi, stretch1, stretch2, newLo, newHi) {
+    const shift1 = newLo - lo, shift2 = newHi - hi;
+    const span = stretch2 - stretch1;
+    const k = span > 0 ? (stretch2 + shift2 - stretch1 - shift1) / span : 1;
+    return (v) => {
+      if (v <= stretch1) return roundCoord(v + shift1);
+      if (v >= stretch2) return roundCoord(v + shift2);
+      return roundCoord(stretch1 + shift1 + (v - stretch1) * k);
+    };
+  }
+
+  // Re-fit a snapshotted container around `childBox` (children's current union).
+  // Always computes from the snapshot so repeated calls during a drag never
+  // accumulate. Returns new attrs per shape and new {x, y} per label, both in
+  // snapshot order.
+  function fitContainer(snap, childBox) {
+    const newLeft = childBox.x - snap.padLeft;
+    const newTop = childBox.y - snap.padTop;
+    const newRight = Math.max(childBox.x + childBox.w + snap.padRight, newLeft + snap.minW);
+    const newBottom = Math.max(childBox.y + childBox.h + snap.padBottom, newTop + snap.minH);
+    const fx = containerAxisMap(snap.left, snap.right, snap.stretchX1, snap.stretchX2, newLeft, newRight);
+    const fy = containerAxisMap(snap.top, snap.bottom, snap.stretchY1, snap.stretchY2, newTop, newBottom);
+    return {
+      shapes: snap.shapes.map((s) => mapShapeAttrs(s.tag, s.attrs, fx, fy)),
+      labels: snap.labels.map((t) => ({
+        x: t.centered
+          ? roundCoord((newLeft + newRight - t.w) / 2)
+          : roundCoord(fx(t.x + t.w / 2) - t.w / 2),
+        y: fy(t.y),
+      })),
+    };
+  }
+
+  // Some PlantUML versions draw a composite state's frame as bare shapes (header
+  // <path>, <rect>, <line>, <text>) with no group, while its children are flat
+  // g.entity with a `Parent.Child` qname. Locate those frames so the caller can
+  // wrap them in a g.cluster and reuse the normal container path.
+  // items: the root group's children in order, either {qname, box} for a group
+  // or {tag, attrs} for a shape. Returns [{qname, start, end}] with inclusive
+  // item indexes, deepest qname first; a frame is claimed at most once.
+  function planOrphanContainers(items) {
+    const known = new Set(items.map((it) => it.qname).filter(Boolean));
+    const unions = new Map();
+    items.forEach((it) => {
+      if (!it.qname || !it.box) return;
+      const parts = it.qname.split('.');
+      for (let i = 1; i < parts.length; i++) {
+        const q = parts.slice(0, i).join('.');
+        if (known.has(q)) continue;
+        const u = unions.get(q) || { x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity };
+        u.x1 = Math.min(u.x1, it.box.x);
+        u.y1 = Math.min(u.y1, it.box.y);
+        u.x2 = Math.max(u.x2, it.box.x + it.box.w);
+        u.y2 = Math.max(u.y2, it.box.y + it.box.h);
+        unions.set(q, u);
+      }
+    });
+    const depth = (q) => q.split('.').length;
+    const claimed = new Set();
+    const plans = [];
+    [...unions.keys()].sort((a, b) => depth(b) - depth(a)).forEach((qname) => {
+      const u = unions.get(qname);
+      let best = -1, bestArea = Infinity;
+      items.forEach((it, i) => {
+        if (it.tag !== 'rect' || claimed.has(i)) return;
+        const b = shapeBounds('rect', it.attrs);
+        if (b.x1 > u.x1 || b.y1 > u.y1 || b.x2 < u.x2 || b.y2 < u.y2) return;
+        const area = (b.x2 - b.x1) * (b.y2 - b.y1);
+        if (area < bestArea) { best = i; bestArea = area; }
+      });
+      if (best < 0) return;
+      claimed.add(best);
+      const prev = items[best - 1];
+      const start = prev && prev.tag === 'path' ? best - 1 : best;
+      let end = best;
+      while (items[end + 1] && (items[end + 1].tag === 'line' || items[end + 1].tag === 'text')) end++;
+      plans.push({ qname, start, end });
+    });
+    return plans;
+  }
+
   return {
+    snapshotContainer, fitContainer, shapeBounds, planOrphanContainers, isPathCurved, hasMovedDescendant,
     parsePath, buildPath, rerouteD, pathEndpoints,
     shiftPolygonPoints, shiftPolygonByEnd,
     tAlongLine, lerp,

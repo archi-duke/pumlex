@@ -45,6 +45,16 @@
     .pex-inline-host g.pex-selected > path {
       stroke: #ef4444 !important; stroke-width: 2.5 !important;
     }
+    /* Containers are often fill="none"; make the whole interior grabbable. */
+    .pex-inline-host g.cluster { cursor: grab; }
+    .pex-inline-host g.cluster > rect,
+    .pex-inline-host g.cluster > polygon,
+    .pex-inline-host g.cluster > path { pointer-events: all; }
+    .pex-inline-host g.cluster:hover > rect,
+    .pex-inline-host g.cluster:hover > polygon,
+    .pex-inline-host g.cluster:hover > path {
+      stroke: #2563eb !important;
+    }
     .pex-inline-host g.link { cursor: pointer; }
     .pex-inline-host g.link.pex-edge-selected > path {
       stroke: #2563eb !important; stroke-width: 2.5 !important;
@@ -709,6 +719,33 @@
     // Everything below here is the original g.entity / g.link wiring used by
     // every diagram type that isn't intercepted above.
 
+    // Composite-state frames emitted as bare shapes become g.cluster here, so
+    // resizeContainers treats them like every other container. Runs before any
+    // transform is applied, so getBBox reads the natural layout.
+    if (diagramType === 'STATE') {
+      const rootG = svg.querySelector('g');
+      if (rootG) {
+        const kids = [...rootG.children];
+        const items = kids.map((el) => {
+          const tag = el.tagName.toLowerCase();
+          if (tag === 'g') {
+            const b = el.getBBox();
+            return { qname: el.getAttribute('data-qualified-name'), box: { x: b.x, y: b.y, w: b.width, h: b.height } };
+          }
+          const attrs = {};
+          for (const attr of el.attributes) attrs[attr.name] = attr.value;
+          return { tag, attrs };
+        });
+        PexGeom.planOrphanContainers(items).forEach(({ qname, start, end }) => {
+          const wrapper = doc.createElementNS(SVG_NS, 'g');
+          wrapper.setAttribute('class', 'cluster');
+          wrapper.setAttribute('data-qualified-name', qname);
+          rootG.insertBefore(wrapper, kids[start]);
+          for (let i = start; i <= end; i++) wrapper.appendChild(kids[i]);
+        });
+      }
+    }
+
     // ---- ViewBox bookkeeping -----------------------------------------------
     // Walk the SVG and compute the union bbox of actual diagram content,
     // skipping our overlay layers. svg.getBBox() would do this in one call
@@ -772,6 +809,8 @@
 
     // ---- Edge follow geometry ----------------------------------------------
     function applyEdgeFollow() {
+      // Containers first: an edge attached to one anchors on its current frame.
+      resizeContainers();
       svg.querySelectorAll('g.link').forEach((g) => {
         g.removeAttribute('transform');
         const e1Id = g.getAttribute('data-entity-1');
@@ -784,7 +823,9 @@
         const d2 = state.layout.nodes[q2] || { dx: 0, dy: 0 };
         const eKey = `${q1}__${q2}`;
         const edgeOverride = state.layout.edges[eKey];
-        const moved = d1.dx || d1.dy || d2.dx || d2.dy;
+        const moved = d1.dx || d1.dy || d2.dx || d2.dy
+          || PexGeom.hasMovedDescendant(state.layout.nodes, q1)
+          || PexGeom.hasMovedDescendant(state.layout.nodes, q2);
         const hasOverride = !!edgeOverride;
 
         const firstPath = g.querySelector('path:not(.pex-edge-hit)');
@@ -864,7 +905,7 @@
         const newPathStart = { x: newStart.x + tipExtStart * fwd.x, y: newStart.y + tipExtStart * fwd.y };
         const newPathEnd   = { x: newEnd.x   - tipExtEnd   * fwd.x, y: newEnd.y   - tipExtEnd   * fwd.y };
 
-        const wasCurved = /[CQS]/i.test(origD);
+        const wasCurved = PexGeom.isPathCurved(origD);
         const edgeType = (edgeOverride && edgeOverride.type) || (wasCurved ? 'curve' : 'straight');
         const built = PexGeom.buildEdgePath(newPathStart, newPathEnd, {
           type: edgeType,
@@ -917,25 +958,27 @@
           t.setAttribute('y', newStart.y + tp * ndy + rotY + tdy);
         });
       });
-      resizeContainers();
       syncEdgeHitboxes();
       if (singleSelectedEdge()) renderHandles();
     }
 
-    // PlantUML clusters (rectangle/package/node) wrap their children but
-    // don't auto-resize when a child moves. We derive the cluster's rect
-    // from the union of its children's current bboxes (with deltas), plus
-    // padding for the label band. Deepest cluster first so nested
-    // containers settle correctly.
+    // PlantUML containers wrap their children but don't auto-resize when a
+    // child moves. Two markups exist: flat g.cluster (rectangle/package/node/
+    // cloud/...) and a g.entity with its children nested inside (composite
+    // state). We re-fit each frame around the union of its children's current
+    // bboxes (with deltas). Deepest first so nested containers settle correctly.
     function resizeContainers() {
-      const clusters = [...svg.querySelectorAll('g.cluster')];
-      if (!clusters.length) return;
-      clusters.sort((a, b) => {
+      const containers = [...svg.querySelectorAll('g.cluster')];
+      svg.querySelectorAll('g.entity').forEach((g) => {
+        if (g.querySelector('g.entity')) containers.push(g);
+      });
+      if (!containers.length) return;
+      containers.sort((a, b) => {
         const ad = (a.getAttribute('data-qualified-name') || '').split('.').length;
         const bd = (b.getAttribute('data-qualified-name') || '').split('.').length;
         return bd - ad; // deepest first
       });
-      for (const cluster of clusters) resizeOneCluster(cluster);
+      for (const container of containers) resizeOneContainer(container);
     }
 
     function getEntityBBoxWithTransform(g) {
@@ -946,12 +989,14 @@
       return { x: b.x + dx, y: b.y + dy, w: b.width, h: b.height };
     }
 
-    function resizeOneCluster(cluster) {
+    function resizeOneContainer(cluster) {
       const cqname = cluster.getAttribute('data-qualified-name');
       if (!cqname) return;
       const prefix = cqname + '.';
+      const isCluster = cluster.classList.contains('cluster');
       // Direct children only (one extra dot in qname). Both g.entity and
-      // nested g.cluster qualify so we recursively support nesting.
+      // nested g.cluster qualify so we recursively support nesting. A g.entity
+      // container only owns what is actually nested inside it.
       const children = [];
       svg.querySelectorAll('g.entity, g.cluster').forEach((g) => {
         if (g === cluster) return;
@@ -959,6 +1004,7 @@
         if (!q || !q.startsWith(prefix)) return;
         const rest = q.slice(prefix.length);
         if (rest.includes('.')) return;
+        if (!isCluster && !cluster.contains(g)) return;
         children.push(g);
       });
       if (!children.length) return;
@@ -973,59 +1019,42 @@
         if (b.y + b.h > maxY) maxY = b.y + b.h;
       }
       if (!isFinite(minX)) return;
+      const childBox = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 
-      const rect = cluster.querySelector('rect');
-      const text = cluster.querySelector('text');
-      // Snapshot the cluster's padding from the SVG as we first received
-      // it. Use bboxes WITH transforms applied so re-entry into edit mode
-      // works correctly: when the server has already pre-resized the
-      // cluster and pre-translated children based on the saved meta, the
-      // rect attrs and the children's translated bboxes are in the same
-      // coordinate frame — padding = (childMinX_translated) - rect.x.
-      // (If we used naked getBBox() we'd compute padLeft against the
-      // already-shifted rect.x and end up with negative or inflated
-      // padding, then expand the cluster again on each re-entry.)
+      // Snapshot the frame as we first received it, against the children's
+      // bboxes WITH transforms applied, so re-entry into edit mode works
+      // correctly: when the server has already pre-resized the frame and
+      // pre-translated children based on the saved meta, both are in the same
+      // coordinate frame. (Naked getBBox() would measure padding against the
+      // already-shifted frame and expand it again on each re-entry.)
       let orig = cluster._pexClusterOrig;
-      if (!orig && rect) {
-        const ox = parseFloat(rect.getAttribute('x'));
-        const oy = parseFloat(rect.getAttribute('y'));
-        const ow = parseFloat(rect.getAttribute('width'));
-        const oh = parseFloat(rect.getAttribute('height'));
-        let imnX = Infinity, imnY = Infinity, imxX = -Infinity, imxY = -Infinity;
-        children.forEach((c) => {
-          const b = getEntityBBoxWithTransform(c);
-          if (b.x < imnX) imnX = b.x;
-          if (b.y < imnY) imnY = b.y;
-          if (b.x + b.w > imxX) imxX = b.x + b.w;
-          if (b.y + b.h > imxY) imxY = b.y + b.h;
+      if (!orig) {
+        const own = (el) => el.closest('g') === cluster;
+        const shapeEls = [...cluster.querySelectorAll('rect, polygon, polyline, path, line, ellipse, circle')].filter(own);
+        const textEls = [...cluster.querySelectorAll('text')].filter(own);
+        const shapes = shapeEls.map((el) => {
+          const attrs = {};
+          for (const attr of el.attributes) attrs[attr.name] = attr.value;
+          return { tag: el.tagName.toLowerCase(), attrs };
         });
-        orig = {
-          padLeft:   imnX - ox,
-          padRight:  (ox + ow) - imxX,
-          padTop:    imnY - oy,
-          padBottom: (oy + oh) - imxY,
-          textOffsetY: text ? parseFloat(text.getAttribute('y')) - oy : 0,
-        };
-        cluster._pexClusterOrig = orig;
+        const texts = textEls.map((el) => ({
+          x: parseFloat(el.getAttribute('x')),
+          y: parseFloat(el.getAttribute('y')),
+          w: parseFloat(el.getAttribute('textLength')) || el.getComputedTextLength(),
+        }));
+        const snap = PexGeom.snapshotContainer(shapes, texts, childBox);
+        if (!snap) return;
+        orig = cluster._pexClusterOrig = { snap, shapeEls, textEls };
       }
-      if (!rect || !orig) return;
 
-      const newX = minX - orig.padLeft;
-      const newY = minY - orig.padTop;
-      const newW = (maxX - minX) + orig.padLeft + orig.padRight;
-      const newH = (maxY - minY) + orig.padTop + orig.padBottom;
-      rect.setAttribute('x', newX);
-      rect.setAttribute('y', newY);
-      rect.setAttribute('width', newW);
-      rect.setAttribute('height', newH);
-
-      // Keep the label centered horizontally at the same vertical offset
-      // PlantUML originally used relative to the rect's top edge.
-      if (text) {
-        const tl = parseFloat(text.getAttribute('textLength'));
-        if (isFinite(tl)) text.setAttribute('x', newX + (newW - tl) / 2);
-        text.setAttribute('y', newY + orig.textOffsetY);
-      }
+      const fitted = PexGeom.fitContainer(orig.snap, childBox);
+      fitted.shapes.forEach((attrs, i) => {
+        for (const [k, v] of Object.entries(attrs)) orig.shapeEls[i].setAttribute(k, v);
+      });
+      fitted.labels.forEach((pos, i) => {
+        orig.textEls[i].setAttribute('x', pos.x);
+        orig.textEls[i].setAttribute('y', pos.y);
+      });
     }
 
     // Each g.link's first <path> has fill="none" so only the visible stroke
@@ -1142,7 +1171,7 @@
         if (eKey && !state.layout.edges[eKey]) {
           const pathEl = cur.querySelector('path:not(.pex-edge-hit)');
           const pathD = pathEl ? (pathEl.getAttribute('data-pex-orig-d') || pathEl.getAttribute('d') || '') : '';
-          const wasCurved = /[CQS]/i.test(pathD);
+          const wasCurved = PexGeom.isPathCurved(pathD);
           state.layout.edges[eKey] = { type: wasCurved ? 'curve' : 'straight' };
         }
         applyEdgeFollow();
@@ -1294,7 +1323,7 @@
       if (!eg) { hideEdgeToolbar(); return; }
       const eKey = edgeKeyForLink(svg, eg);
       const ov = state.layout.edges[eKey];
-      const wasCurved = /[CQS]/i.test(eg.querySelector('path:not(.pex-edge-hit)').getAttribute('data-pex-orig-d') || '');
+      const wasCurved = PexGeom.isPathCurved(eg.querySelector('path:not(.pex-edge-hit)').getAttribute('data-pex-orig-d') || '');
       const curType = (ov && ov.type) || (wasCurved ? 'curve' : 'straight');
       tb.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.type === curType));
       // applyEdgeFollow may have just mutated the path's `d` attribute
@@ -1352,32 +1381,82 @@
       if (!state.selectedSet.has(g)) {
         select(g, { toggle: !!e.shiftKey });
       }
-      const pt = clientToSvg(e, svg);
       // Snapshot each NODE member's start delta so the group moves rigidly.
       // Edges/text in the unified selection are not draggable here — they
       // remain in selection but stay put while the user drags nodes.
       const members = [];
       for (const el of state.selectedSet) {
         if (selKind(el) !== 'node') continue;
+        // A child of a selected composite already moves with its parent's
+        // transform; translating it as well would double the offset.
+        if (el.parentElement && el.parentElement.closest('g.entity.pex-selected')) continue;
         const q = entityQname(el);
         const existing = state.layout.nodes[q] || { dx: 0, dy: 0 };
         members.push({ g: el, q, originDx: existing.dx, originDy: existing.dy });
       }
       state.dragging = {
         primary: g,
+        listenTarget: g,
         members,
-        startX: pt.x, startY: pt.y,
+        ...dragOrigin(e),
       };
       g.setPointerCapture(e.pointerId);
       g.addEventListener('pointermove', onDrag);
       g.addEventListener('pointerup', endDrag);
       g.addEventListener('pointercancel', endDrag);
     }
+    // Dragging a container moves its children; the frame then follows through
+    // resizeContainers, and the layout stays child deltas only (no new schema).
+    // Nested entities are skipped because their parent's transform carries them.
+    // Capture waits for real movement so a plain click still selects a label.
+    function startContainerDrag(e, cluster) {
+      if (e.button !== 0 || e.shiftKey) return; // Shift falls through to marquee
+      const q = cluster.getAttribute('data-qualified-name');
+      if (!q) return;
+      const members = [];
+      svg.querySelectorAll('g.entity').forEach((g) => {
+        const cq = entityQname(g);
+        if (!cq || !cq.startsWith(q + '.')) return;
+        if (g.parentElement.closest('g.entity')) return;
+        const existing = state.layout.nodes[cq] || { dx: 0, dy: 0 };
+        members.push({ g, q: cq, originDx: existing.dx, originDy: existing.dy });
+      });
+      if (!members.length) return;
+      e.preventDefault();
+      e.stopPropagation();
+      select(null);
+      // Listen on the document: before capture, a fast first move can already
+      // land outside the frame.
+      state.dragging = {
+        primary: cluster,
+        listenTarget: doc,
+        members,
+        ...dragOrigin(e),
+        isContainer: true,
+        moved: false,
+        pointerId: e.pointerId,
+      };
+      doc.addEventListener('pointermove', onDrag);
+      doc.addEventListener('pointerup', endDrag);
+      doc.addEventListener('pointercancel', endDrag);
+    }
+    // adjustViewBox refits during a drag, so converting the pointer through the
+    // live CTM feeds each refit back into the offset and the element runs away.
+    // Measure from the screen delta with the scale frozen at drag start instead.
+    function dragOrigin(e) {
+      const ctm = svg.getScreenCTM();
+      return { startClientX: e.clientX, startClientY: e.clientY, scaleX: ctm.a || 1, scaleY: ctm.d || 1 };
+    }
     function onDrag(e) {
       const d = state.dragging;
       if (!d) return;
-      const pt = clientToSvg(e, svg);
-      const ox = pt.x - d.startX, oy = pt.y - d.startY;
+      const ox = (e.clientX - d.startClientX) / d.scaleX;
+      const oy = (e.clientY - d.startClientY) / d.scaleY;
+      if (d.isContainer && !d.moved) {
+        if (Math.abs(ox) < TEXT_DRAG_THRESHOLD && Math.abs(oy) < TEXT_DRAG_THRESHOLD) return;
+        d.moved = true;
+        try { d.primary.setPointerCapture(d.pointerId); } catch {}
+      }
       for (const m of d.members) {
         const dx = Math.round(m.originDx + ox);
         const dy = Math.round(m.originDy + oy);
@@ -1390,11 +1469,12 @@
     function endDrag(e) {
       const d = state.dragging;
       if (!d) return;
-      d.primary.removeEventListener('pointermove', onDrag);
-      d.primary.removeEventListener('pointerup', endDrag);
-      d.primary.removeEventListener('pointercancel', endDrag);
+      d.listenTarget.removeEventListener('pointermove', onDrag);
+      d.listenTarget.removeEventListener('pointerup', endDrag);
+      d.listenTarget.removeEventListener('pointercancel', endDrag);
       try { d.primary.releasePointerCapture(e.pointerId); } catch {}
       state.dragging = null;
+      if (d.isContainer && !d.moved) return; // plain click: nothing changed
       fire();
     }
     function startHandleDrag(e, which) {
@@ -1469,7 +1549,7 @@
       if (ov) return ov;
       const pathEl = linkG.querySelector('path:not(.pex-edge-hit)');
       const pathD = pathEl ? (pathEl.getAttribute('data-pex-orig-d') || pathEl.getAttribute('d') || '') : '';
-      const wasCurved = /[CQS]/i.test(pathD);
+      const wasCurved = PexGeom.isPathCurved(pathD);
       ov = state.layout.edges[eKey] = { type: wasCurved ? 'curve' : 'straight' };
       return ov;
     }
@@ -1698,7 +1778,9 @@
     svg.querySelectorAll('g.entity').forEach((g) => {
       const d = state.layout.nodes[entityQname(g)];
       if (d) g.setAttribute('transform', `translate(${d.dx}, ${d.dy})`);
-      const fnDown = (e) => startDrag(e, g);
+      // stopPropagation: entities nest in composite states; grabbing a child
+      // must not also start a drag on its parent.
+      const fnDown = (e) => { e.stopPropagation(); startDrag(e, g); };
       // pointerdown handles selection (in startDrag); click only stops the
       // event from reaching svg's onSvgClick which would clear selection.
       // (Doing selection on click too would double-toggle for Shift+click.)
@@ -1706,6 +1788,12 @@
       g.addEventListener('pointerdown', fnDown);
       g.addEventListener('click', fnClick);
       entityHandlers.push({ g, fnDown, fnClick });
+    });
+    const containerHandlers = [];
+    svg.querySelectorAll('g.cluster').forEach((g) => {
+      const fnDown = (e) => startContainerDrag(e, g);
+      g.addEventListener('pointerdown', fnDown);
+      containerHandlers.push({ g, fnDown });
     });
     svg.querySelectorAll('g.link').forEach((linkG) => {
       const fnClick = (e) => {
@@ -1867,6 +1955,7 @@
           g.removeEventListener('pointerdown', fnDown);
           g.removeEventListener('click', fnClick);
         });
+        containerHandlers.forEach(({ g, fnDown }) => g.removeEventListener('pointerdown', fnDown));
         linkHandlers.forEach(({ g, fnClick }) => g.removeEventListener('click', fnClick));
         textHandlers.forEach(({ textEl, fnDown, fnTextClick, fnContextMenu }) => {
           if (fnDown) textEl.removeEventListener('pointerdown', fnDown);

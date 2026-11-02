@@ -83,24 +83,42 @@ function applyLayout(svg, rawLayout) {
     return $.xml();
   }
 
+  // Mirrors pex-core/inline.js: composite-state frames emitted as bare shapes
+  // become g.cluster so they go through the normal container path.
+  if (diagramType === 'STATE') wrapOrphanContainers($);
+
   // Build qname ↔ id maps so PlantUML's auto-generated `ent00XX` ids can shift
   // freely as the source is edited without invalidating saved layouts.
-  const qToEl = {};
-  const idToQ = {};
-  $('g.entity').each((_, el) => {
+  //
+  // idToQ MUST include clusters: an edge endpoint can be a cluster (e.g.
+  // `Firewall --> System` where System is a `rectangle { ... }` group). The
+  // client's edgeKeyForLink resolves ANY g[id] — entity or cluster — to its
+  // data-qualified-name, so a layout saved as `Firewall__System` was never
+  // found here when idToQ only scanned g.entity (server computed
+  // `Firewall__ent0004` instead and silently dropped texts/curve/anchor).
+  const qToEl = {};   // entity only — node translate targets
+  const idToQ = {};   // entity + cluster — edge endpoint key resolution
+  const allQnames = [];
+  $('g.entity, g.cluster').each((_, el) => {
     const $el = $(el);
     const id = $el.attr('id');
     const q = $el.attr('data-qualified-name') || id;
-    if (q) { qToEl[q] = $el; idToQ[id] = q; }
+    if (!q) return;
+    idToQ[id] = q;
+    allQnames.push(q);
+    if ($el.hasClass('entity')) qToEl[q] = $el;
   });
 
   // Detect simple 1:1 renames (orphan meta key + fresh SVG qname) and
   // migrate the layout's node + edge keys before applying. Lets a meta
   // saved against `Order` keep its dx/dy after the user renames the
   // class to `PurchaseOrder` in source, without manual cleanup.
-  PexMeta.migrateRenamedKeys(Object.keys(qToEl), layout);
+  // Cluster qnames included so a cluster edge endpoint (`...__System`) is
+  // not mistaken for an orphan and mis-migrated.
+  PexMeta.migrateRenamedKeys(allQnames, layout);
   const nodes = layout.nodes;
   const edges = layout.edges;
+  const containerSnaps = snapshotContainers($);
 
   for (const [qname, delta] of Object.entries(nodes)) {
     const $el = qToEl[qname];
@@ -109,6 +127,8 @@ function applyLayout(svg, rawLayout) {
     const add = `translate(${delta.dx}, ${delta.dy})`;
     $el.attr('transform', existing ? `${existing} ${add}` : add);
   }
+  // Containers first: an edge attached to one anchors on its current frame.
+  resizeContainers($, containerSnaps, nodes);
   $('g.link').each((_, el) => {
     const $el = $(el);
     const e1Id = $el.attr('data-entity-1');
@@ -119,7 +139,9 @@ function applyLayout(svg, rawLayout) {
     const d2 = nodes[q2] || { dx: 0, dy: 0 };
     const eKey = `${q1}__${q2}`;
     const edgeOverride = edges[eKey];
-    const moved = d1.dx || d1.dy || d2.dx || d2.dy;
+    const moved = d1.dx || d1.dy || d2.dx || d2.dy
+      || PexGeom.hasMovedDescendant(nodes, q1)
+      || PexGeom.hasMovedDescendant(nodes, q2);
     const hasOverride = !!edgeOverride;
     if (!moved && !hasOverride) return;
 
@@ -173,7 +195,7 @@ function applyLayout(svg, rawLayout) {
     const newPathStart = { x: newStart.x + tipExtStart * fwd.x, y: newStart.y + tipExtStart * fwd.y };
     const newPathEnd   = { x: newEnd.x   - tipExtEnd   * fwd.x, y: newEnd.y   - tipExtEnd   * fwd.y };
 
-    const wasCurved = /[CQS]/i.test(origD);
+    const wasCurved = PexGeom.isPathCurved(origD);
     const edgeType = (edgeOverride && edgeOverride.type) || (wasCurved ? 'curve' : 'straight');
     const built = PexGeom.buildEdgePath(newPathStart, newPathEnd, {
       type: edgeType,
@@ -226,84 +248,56 @@ function applyLayout(svg, rawLayout) {
       $t.attr('y', String(newStart.y + tp * ndy + rotY + tdy));
     });
   });
-  resizeContainers($, nodes);
   expandViewBox($, nodes);
   return $.xml();
 }
 
-// Mirrors pex-core/inline.js resizeContainers: PlantUML draws clusters
-// (rectangle/package/node) at a fixed size; once a child entity is
-// translated by a layout delta the cluster no longer follows. Walk all
-// clusters deepest-first and rewrite each cluster's <rect> (and label
-// position) to span the union of its direct children's translated bboxes
-// plus PlantUML's original padding (snapshotted from the natural layout
-// before any delta is applied).
-function resizeContainers($, nodes) {
-  const clusters = $('g.cluster').toArray();
-  if (!clusters.length) return;
-  // Deepest-first so a nested cluster's new bbox is in place before its
-  // parent reads it.
-  clusters.sort((a, b) => {
-    const ad = ($(a).attr('data-qualified-name') || '').split('.').length;
-    const bd = ($(b).attr('data-qualified-name') || '').split('.').length;
-    return bd - ad;
+// Mirrors pex-core/inline.js resizeContainers: PlantUML draws containers at a
+// fixed size, either as flat g.cluster (rectangle/package/node/cloud/...) or as
+// a g.entity with its children nested inside (composite state). Once a child is
+// translated by a layout delta the frame no longer follows. Snapshot every
+// frame from the natural layout (must run BEFORE any delta is applied), then
+// walk deepest-first re-fitting each frame around its direct children.
+function wrapOrphanContainers($) {
+  const kids = $('svg').first().children('g').first().children().toArray();
+  const items = kids.map((el) => {
+    if (el.name !== 'g') return { tag: el.name, attrs: el.attribs };
+    return { qname: el.attribs['data-qualified-name'], box: entityBBox($, $(el)) };
   });
-  for (const c of clusters) resizeOneCluster($, $(c), nodes);
+  PexGeom.planOrphanContainers(items).forEach(({ qname, start, end }) => {
+    const $wrapper = $('<g class="cluster"></g>').attr('data-qualified-name', qname);
+    $(kids[start]).before($wrapper);
+    for (let i = start; i <= end; i++) $wrapper.append(kids[i]);
+  });
 }
 
-function resizeOneCluster($, $cluster, nodes) {
-  const cqname = $cluster.attr('data-qualified-name');
-  if (!cqname) return;
+function directContainerChildren($, $container) {
+  const cqname = $container.attr('data-qualified-name');
+  if (!cqname) return null;
   const prefix = cqname + '.';
+  const isCluster = $container.hasClass('cluster');
   // Direct children = entity OR cluster whose qname is `prefix + <leaf>`
-  // (no extra dots in the rest).
-  const $children = $('g.entity, g.cluster').filter((_, el) => {
+  // (no extra dots in the rest). A g.entity container only owns what is
+  // actually nested inside it.
+  return $('g.entity, g.cluster').filter((_, el) => {
     const $el = $(el);
-    if ($el.is($cluster)) return false;
+    if ($el.is($container)) return false;
     const q = $el.attr('data-qualified-name');
     if (!q || !q.startsWith(prefix)) return false;
     const rest = q.slice(prefix.length);
-    return rest.length > 0 && !rest.includes('.');
+    if (rest.length === 0 || rest.includes('.')) return false;
+    return isCluster || $el.closest($container).length > 0;
   });
-  if (!$children.length) return;
+}
 
-  const $rect = $cluster.find('rect').first();
-  const $text = $cluster.find('text').first();
-  if (!$rect.length) return;
-
-  // Original cluster geometry (PlantUML's natural layout).
-  const ox = parseFloat($rect.attr('x'));
-  const oy = parseFloat($rect.attr('y'));
-  const ow = parseFloat($rect.attr('width'));
-  const oh = parseFloat($rect.attr('height'));
-  if ([ox, oy, ow, oh].some(Number.isNaN)) return;
-  const otOffsetY = $text.length ? (parseFloat($text.attr('y')) - oy) : 0;
-
-  // Original (no-delta) children bbox — for snapshotting padding.
-  let omnX = Infinity, omnY = Infinity, omxX = -Infinity, omxY = -Infinity;
-  $children.each((_, el) => {
-    const b = entityBBox($, $(el));
-    if (!b) return;
-    if (b.x < omnX) omnX = b.x;
-    if (b.y < omnY) omnY = b.y;
-    if (b.x + b.w > omxX) omxX = b.x + b.w;
-    if (b.y + b.h > omxY) omxY = b.y + b.h;
-  });
-  if (!isFinite(omnX)) return;
-  const padLeft   = omnX - ox;
-  const padRight  = (ox + ow) - omxX;
-  const padTop    = omnY - oy;
-  const padBottom = (oy + oh) - omxY;
-
-  // Translated children bbox (deltas applied for entities; nested clusters
-  // already have their rect mutated by a previous deepest-first pass).
+function childrenUnion($, $children, nodes) {
   let mnX = Infinity, mnY = Infinity, mxX = -Infinity, mxY = -Infinity;
   $children.each((_, el) => {
     const $el = $(el);
     const b = entityBBox($, $el);
     if (!b) return;
     let dx = 0, dy = 0;
-    if ($el.hasClass('entity')) {
+    if (nodes && $el.hasClass('entity')) {
       const q = $el.attr('data-qualified-name') || $el.attr('id');
       const d = q ? nodes[q] : null;
       if (d) { dx = d.dx || 0; dy = d.dy || 0; }
@@ -314,20 +308,58 @@ function resizeOneCluster($, $cluster, nodes) {
     if (x + b.w > mxX) mxX = x + b.w;
     if (y + b.h > mxY) mxY = y + b.h;
   });
-  if (!isFinite(mnX)) return;
+  if (!isFinite(mnX)) return null;
+  return { x: mnX, y: mnY, w: mxX - mnX, h: mxY - mnY };
+}
 
-  const newX = mnX - padLeft;
-  const newY = mnY - padTop;
-  const newW = (mxX - mnX) + padLeft + padRight;
-  const newH = (mxY - mnY) + padTop + padBottom;
-  $rect.attr('x', String(newX));
-  $rect.attr('y', String(newY));
-  $rect.attr('width', String(newW));
-  $rect.attr('height', String(newH));
-  if ($text.length) {
-    const tl = parseFloat($text.attr('textLength'));
-    if (isFinite(tl)) $text.attr('x', String(newX + (newW - tl) / 2));
-    $text.attr('y', String(newY + otOffsetY));
+function snapshotContainers($) {
+  const containers = $('g.cluster').toArray();
+  $('g.entity').each((_, el) => {
+    if ($(el).find('g.entity').length) containers.push(el);
+  });
+  const snaps = [];
+  for (const el of containers) {
+    const $container = $(el);
+    const $children = directContainerChildren($, $container);
+    if (!$children || !$children.length) continue;
+    const childBox = childrenUnion($, $children, null);
+    if (!childBox) continue;
+    const ownedBy = (_, c) => $(c).closest('g').is($container);
+    const shapeEls = $container.find('rect, polygon, polyline, path, line, ellipse, circle').filter(ownedBy).toArray();
+    const textEls = $container.find('text').filter(ownedBy).toArray();
+    const snap = PexGeom.snapshotContainer(
+      shapeEls.map((c) => ({ tag: c.name, attrs: { ...c.attribs } })),
+      textEls.map((c) => {
+        const $t = $(c);
+        const fontSize = parseFloat($t.attr('font-size') || 14);
+        return {
+          x: parseFloat($t.attr('x')),
+          y: parseFloat($t.attr('y')),
+          w: parseFloat($t.attr('textLength')) || ($t.text() || '').length * fontSize * 0.6,
+        };
+      }),
+      childBox
+    );
+    if (snap) snaps.push({ $container, $children, shapeEls, textEls, snap });
+  }
+  // Deepest-first so a nested container's new bbox is in place before its
+  // parent reads it.
+  const depth = (s) => (s.$container.attr('data-qualified-name') || '').split('.').length;
+  return snaps.sort((a, b) => depth(b) - depth(a));
+}
+
+function resizeContainers($, snaps, nodes) {
+  for (const { $children, shapeEls, textEls, snap } of snaps) {
+    const childBox = childrenUnion($, $children, nodes);
+    if (!childBox) continue;
+    const fitted = PexGeom.fitContainer(snap, childBox);
+    fitted.shapes.forEach((attrs, i) => {
+      for (const [k, v] of Object.entries(attrs)) $(shapeEls[i]).attr(k, String(v));
+    });
+    fitted.labels.forEach((pos, i) => {
+      $(textEls[i]).attr('x', String(pos.x));
+      $(textEls[i]).attr('y', String(pos.y));
+    });
   }
 }
 
@@ -352,22 +384,19 @@ function expandViewBox($, layout) {
   // Entities, with their translate offsets
   $('g.entity').each((_, el) => {
     const $el = $(el);
+    // Nested entities are local to their parent and covered by its bbox.
+    if ($el.parent().closest('g.entity').length) return;
     const q = $el.attr('data-qualified-name') || $el.attr('id');
     const d = (q && layout[q]) || { dx: 0, dy: 0 };
     const b = entityBBox($, $el);
     if (!b) return;
     consider(b.x + d.dx, b.y + d.dy, b.x + d.dx + b.w, b.y + d.dy + b.h);
   });
-  // Clusters after resizeContainers updated their <rect>
+  // Clusters after resizeContainers updated their frame
   $('g.cluster').each((_, el) => {
-    const $rect = $(el).find('rect').first();
-    if (!$rect.length) return;
-    const cx = parseFloat($rect.attr('x'));
-    const cy = parseFloat($rect.attr('y'));
-    const cw = parseFloat($rect.attr('width'));
-    const ch = parseFloat($rect.attr('height'));
-    if ([cx, cy, cw, ch].some(Number.isNaN)) return;
-    consider(cx, cy, cx + cw, cy + ch);
+    const b = entityBBox($, $(el));
+    if (!b) return;
+    consider(b.x, b.y, b.x + b.w, b.y + b.h);
   });
   // Free text — titles, captions. Skip text inside entity/cluster (already
   // covered by their bboxes) and edge labels (handled below). Use a coarse
@@ -658,58 +687,25 @@ function cssEscape(s) {
 // a server-side substitute for SVGGraphicsElement.getBBox().
 function entityBBox($, $entity) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  const consider = (x1, y1, x2, y2) => {
-    if (x1 < minX) minX = x1; if (y1 < minY) minY = y1;
-    if (x2 > maxX) maxX = x2; if (y2 > maxY) maxY = y2;
+  // Composite states nest entities, and a nested entity's translate moves
+  // everything inside it, so accumulate transforms up to $entity.
+  const stop = $entity.get(0);
+  const offsetOf = (el) => {
+    let dx = 0, dy = 0;
+    for (let p = el.parent; p && p !== stop; p = p.parent) {
+      const m = ((p.attribs && p.attribs.transform) || '').match(/translate\(\s*([-\d.]+)[,\s]+([-\d.]+)\s*\)/);
+      if (m) { dx += parseFloat(m[1]); dy += parseFloat(m[2]); }
+    }
+    return { dx, dy };
   };
-  $entity.find('rect').each((_, el) => {
-    const $el = $(el);
-    const x = parseFloat($el.attr('x') || 0);
-    const y = parseFloat($el.attr('y') || 0);
-    const w = parseFloat($el.attr('width') || 0);
-    const h = parseFloat($el.attr('height') || 0);
-    consider(x, y, x + w, y + h);
-  });
-  $entity.find('ellipse').each((_, el) => {
-    const $el = $(el);
-    const cx = parseFloat($el.attr('cx') || 0);
-    const cy = parseFloat($el.attr('cy') || 0);
-    const rx = parseFloat($el.attr('rx') || 0);
-    const ry = parseFloat($el.attr('ry') || 0);
-    consider(cx - rx, cy - ry, cx + rx, cy + ry);
-  });
-  $entity.find('circle').each((_, el) => {
-    const $el = $(el);
-    const cx = parseFloat($el.attr('cx') || 0);
-    const cy = parseFloat($el.attr('cy') || 0);
-    const r = parseFloat($el.attr('r') || 0);
-    consider(cx - r, cy - r, cx + r, cy + r);
-  });
-  $entity.find('polygon').each((_, el) => {
-    const pts = ($(el).attr('points') || '').trim().split(/[\s,]+/).map(parseFloat);
-    for (let i = 0; i + 1 < pts.length; i += 2) consider(pts[i], pts[i + 1], pts[i], pts[i + 1]);
-  });
-  // Actors and other composite entities use <path> (stick figure) and
-  // sometimes <line>. Without these, the server-side bbox would be only
-  // the actor's head ellipse, and arrow anchors on a moved actor would
-  // start from the head instead of the actor's true edge.
-  $entity.find('path').each((_, el) => {
-    // Coarse but safe: strip command letters, treat every number pair as a
-    // coordinate. PlantUML's actor stick-figure path is plain M/L commands
-    // so this is exact; for general curves it overestimates slightly but
-    // never undershoots, which is what we want for a containing bbox.
-    const d = $(el).attr('d') || '';
-    const nums = d.replace(/[A-Za-z]/g, ' ')
-      .trim().split(/[\s,]+/).map(parseFloat).filter((n) => !Number.isNaN(n));
-    for (let i = 0; i + 1 < nums.length; i += 2) consider(nums[i], nums[i + 1], nums[i], nums[i + 1]);
-  });
-  $entity.find('line').each((_, el) => {
-    const $el = $(el);
-    const x1 = parseFloat($el.attr('x1') || 0);
-    const y1 = parseFloat($el.attr('y1') || 0);
-    const x2 = parseFloat($el.attr('x2') || 0);
-    const y2 = parseFloat($el.attr('y2') || 0);
-    consider(Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2));
+  const consider = (el, x1, y1, x2, y2) => {
+    const { dx, dy } = offsetOf(el);
+    if (x1 + dx < minX) minX = x1 + dx; if (y1 + dy < minY) minY = y1 + dy;
+    if (x2 + dx > maxX) maxX = x2 + dx; if (y2 + dy > maxY) maxY = y2 + dy;
+  };
+  $entity.find('rect, ellipse, circle, polygon, path, line').each((_, el) => {
+    const b = PexGeom.shapeBounds(el.name, el.attribs);
+    if (b) consider(el, b.x1, b.y1, b.x2, b.y2);
   });
   // Text labels often extend the visual bbox beyond the geometry shapes
   // (most importantly: actor labels sit BELOW the stick figure). Without
@@ -731,7 +727,7 @@ function entityBBox($, $entity) {
     // SVG <text>'s y is the baseline. Approximate ascender ~0.85em /
     // descender ~0.15em above/below it. Slightly conservative on each
     // side keeps the bbox a hair larger than the rendered glyphs.
-    consider(x, y - fontSize * 0.85, x + width, y + fontSize * 0.15);
+    consider(el, x, y - fontSize * 0.85, x + width, y + fontSize * 0.15);
   });
   if (minX === Infinity) return null;
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
