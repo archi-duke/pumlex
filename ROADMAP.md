@@ -35,6 +35,8 @@
 ## E. 기능 보강 (장기)
 
 - [x] **E-0** 컨테이너(rectangle/package/node 등) 자동 리사이즈 — 클라이언트 (`resizeContainers` in pex-inline) + 서버 (`applyLayout` 의 cluster resize) 양쪽에서 g.cluster 를 deepest-first 로 자식 translated bbox 의 union 으로 확장 + PlantUML 원본 padding 보존. 재편집 시 전이 누적 방지 위해 padding 스냅샷을 transform-aware 로 계산. 커밋 `345a549 / 067a3d8 / 183fe58`.
+- [x] **E-0.1** 컨테이너 자동 리사이즈를 모든 프레임 도형으로 확장 — package/node/cloud/database 등 `path`/`polygon` 프레임과 `g.entity` 가 중첩된 복합 state 까지 지원. 여백(탭·아이콘·모서리)은 유지하고 자식 사이 구간만 늘리는 9-slice 매핑을 `PexGeom.snapshotContainer` / `fitContainer` 로 클라이언트·서버가 공유.
+- [x] **E-0.2** 컨테이너 드래그 — 프레임을 드래그하면 하위 엔티티 전체가 함께 이동. 레이아웃에는 자식 delta 만 저장(스키마 변경 없음). Shift+드래그는 프레임 안에서도 마퀴 선택. 컨테이너에 직접 연결된 엣지는 프레임을 따라감.
 - [x] **E-1** Multi-select / group move — `state.selectedSet` (Set) + `state.selected` (drag anchor). 평소 클릭은 selection replace, Shift+클릭으로 toggle. startDrag 가 멤버별 originDx/Dy 스냅샷 후 동일 오프셋으로 그룹 이동, applyEdgeFollow + resizeContainers 한 번에 따라옴. 커밋 `4dfe0f5`.
 - [x] **E-2** Qualified-name 변경 시 layout 마이그레이션 — `PexMeta.migrateRenamedKeys` 가 1:1 또는 substring overlap 으로 단일 orphan 을 fresh qname 에 재할당, 엣지 키도 동시 마이그레이션. 서버는 applyLayout 직전, 클라이언트는 activate 시점에 호출 (호출 후 fire() 로 정리된 메타가 다음 commit 에 재기록). 모호한 케이스는 보존 (UX prompt 후속). 커밋 `7dc8310`.
 - [ ] ~~**E-3** plantumlEx 측 저장된 다이어그램 list / 검색 페이지~~ — **보류** (2026-04-30, 모노레포 전환으로 우선순위 낮아짐).
