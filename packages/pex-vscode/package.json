@@ -5,7 +5,7 @@
   "version": "0.0.4",
   "publisher": "archi-duke",
   "private": true,
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/archi-duke/pumlex.git"

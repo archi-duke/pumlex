@@ -2,7 +2,7 @@
   "name": "@archi-duke/pex-core",
   "version": "0.1.0",
   "description": "Shared PlantUML layout (geom + meta + inline-edit) modules. UMD-style: works in Node (require) and browser (script tag).",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "main": "inline.js",
   "files": [
     "geom.js",
