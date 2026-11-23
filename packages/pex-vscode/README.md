@@ -176,4 +176,4 @@ pumlex 는 VS Code 의 **built-in markdown preview** 에 markdown-it 플러그�
 
 ## 라이선스
 
-MIT — [LICENSE](../../LICENSE)
+Apache-2.0 — [LICENSE](../../LICENSE)

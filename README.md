@@ -51,4 +51,4 @@ npm run build:demo        # docs/ 재빌드
 
 ## 라이선스
 
-MIT — [LICENSE](./LICENSE).
+Apache-2.0 — [LICENSE](./LICENSE).

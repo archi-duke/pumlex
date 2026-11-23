@@ -2,7 +2,7 @@
   "name": "@archi-duke/pex-server",
   "version": "0.1.0",
   "description": "PlantUML layout fine-tune editor server (Express + cheerio + plantuml-encoder). Renders SVGs and applies pex-core layout deltas.",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
